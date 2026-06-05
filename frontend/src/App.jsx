@@ -150,6 +150,31 @@ const supabaseFetch = async (path) => {
   return res.json();
 };
 
+const supabaseFetchAll = async (pathPattern) => {
+  let allData = [];
+  const limit = 1000;
+  let offset = 0;
+  let hasMore = true;
+  
+  const separator = pathPattern.includes('?') ? '&' : '?';
+  
+  while (hasMore) {
+    const paginatedPath = `${pathPattern}${separator}limit=${limit}&offset=${offset}`;
+    const data = await supabaseFetch(paginatedPath);
+    if (!Array.isArray(data)) {
+      return data;
+    }
+    allData = allData.concat(data);
+    if (data.length < limit) {
+      hasMore = false;
+    } else {
+      offset += limit;
+    }
+  }
+  return allData;
+};
+
+
 const computeStatsFromData = (stocksList, instHolders, mfHolders) => {
   const totalInst = instHolders.reduce((sum, h) => sum + (h.value || 0), 0);
   const totalMf = mfHolders.reduce((sum, h) => sum + (h.value || 0), 0);
@@ -312,9 +337,9 @@ function App() {
         const mfQuery = latestTimestamp ? `mutual_fund_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'mutual_fund_holders?select=*';
         
         const [stocksData, instData, mfData] = await Promise.all([
-          supabaseFetch('stock_metadata?select=*&or=(category.eq.Mega-Cap,category.eq.Large-Cap)&order=symbol'),
-          supabaseFetch(instQuery),
-          supabaseFetch(mfQuery)
+          supabaseFetchAll('stock_metadata?select=*&or=(category.eq.Mega-Cap,category.eq.Large-Cap)&order=symbol'),
+          supabaseFetchAll(instQuery),
+          supabaseFetchAll(mfQuery)
         ]);
         
         setStocks(stocksData);

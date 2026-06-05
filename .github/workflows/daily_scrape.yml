@@ -31,5 +31,5 @@ jobs:
         env:
           # Reads the Supabase database connection string stored in GitHub secrets
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        # Runs the pipeline parsing up to 1000 symbols
-        run: python -m backend.pipeline 1000
+        # Runs the pipeline parsing all symbols matching target categories and new symbols
+        run: python -m backend.pipeline all

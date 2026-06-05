@@ -389,8 +389,12 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
             all_symbols = get_nasdaq_symbols()
             
         # Limit symbols to process to prevent hitting yfinance limits or freezing
-        symbols_to_process = all_symbols[:max_limit]
-        log_pipeline_info(f"Processing queue capped at {len(symbols_to_process)} tickers for scraping.")
+        if max_limit is not None and max_limit > 0:
+            symbols_to_process = all_symbols[:max_limit]
+            log_pipeline_info(f"Processing queue capped at {len(symbols_to_process)} tickers for scraping.")
+        else:
+            symbols_to_process = all_symbols
+            log_pipeline_info(f"Processing queue of {len(symbols_to_process)} tickers for scraping.")
         
         max_workers = config['performance']['max_workers']
         completed_count = 0
@@ -538,10 +542,14 @@ if __name__ == "__main__":
         print("--- STARTING SCHEDULER PIPELINE SCRAPE ---")
         limit = 50
         if len(sys.argv) > 1:
-            try:
-                limit = int(sys.argv[1])
-            except ValueError:
-                pass
+            val = sys.argv[1].strip().lower()
+            if val == "all":
+                limit = None
+            else:
+                try:
+                    limit = int(val)
+                except ValueError:
+                    pass
         
         result = run_scraping_pipeline(db, max_limit=limit)
         print(f"--- PIPELINE COMPLETED ---")
