@@ -2,10 +2,22 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# Try to load environment variables from .env file in the same directory if it exists
+env_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                os.environ[key.strip()] = val.strip()
+
 # Database selection:
 # If DATABASE_URL is provided in environment variables, connect to PostgreSQL (Supabase)
 # Otherwise, fall back to a local SQLite database for local testing
 DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.strip('"\'')
 
 if not DATABASE_URL:
     # SQLite local DB path
