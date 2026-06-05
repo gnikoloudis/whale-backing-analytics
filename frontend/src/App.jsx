@@ -131,14 +131,21 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const isSupabaseMode = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 
 const supabaseFetch = async (path) => {
-  const url = `${SUPABASE_URL}/rest/v1/${path}`;
-  const res = await fetch(url, {
-    headers: {
-      'apikey': SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      'Content-Type': 'application/json'
-    }
-  });
+  const cleanBaseUrl = SUPABASE_URL.replace(/\/+$/, '');
+  const url = `${cleanBaseUrl}/rest/v1/${path}`;
+  
+  const headers = {
+    'apikey': SUPABASE_ANON_KEY,
+    'Content-Type': 'application/json'
+  };
+  
+  // Only include Authorization header if using a legacy JWT key (starts with 'ey').
+  // The new 'sb_publishable_' keys are not JWTs and will cause token decoding errors if passed as Bearer.
+  if (SUPABASE_ANON_KEY.startsWith('ey')) {
+    headers['Authorization'] = `Bearer ${SUPABASE_ANON_KEY}`;
+  }
+  
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`Supabase PostgREST error: ${res.statusText}`);
   return res.json();
 };
