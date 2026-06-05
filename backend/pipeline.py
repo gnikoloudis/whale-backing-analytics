@@ -6,6 +6,7 @@ import logging
 import threading
 import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
@@ -85,6 +86,13 @@ def import_local_data(db: Session) -> dict:
         log_pipeline_info(f"Reading master categories: {master_file_path}")
         master_df = pd.read_csv(master_file_path)
         
+        # Get default timestamp from master file if it exists, else default
+        default_timestamp = "2026-06-05 13:30:00"
+        if not master_df.empty and 'Timestamp' in master_df.columns:
+            non_null_ts = master_df['Timestamp'].dropna()
+            if not non_null_ts.empty:
+                default_timestamp = str(non_null_ts.iloc[0])
+        
         # Normalize columns: Symbol, MarketCap, Category, Sector, Industry, DeepDiveCaptured, Timestamp
         mapping_metadata = {
             'Symbol': 'symbol',
@@ -106,6 +114,10 @@ def import_local_data(db: Session) -> dict:
         for col in metadata_cols:
             if col not in master_df.columns:
                 master_df[col] = None
+        
+        # Override the stock metadata timestamps to use the unified default_timestamp
+        # so that all seeded tables share the exact same queryable timestamp!
+        master_df['timestamp'] = default_timestamp
         master_df = master_df[metadata_cols]
         
         # Bulk insert metadata
@@ -139,13 +151,14 @@ def import_local_data(db: Session) -> dict:
             inst_df['pct_held'] = pd.to_numeric(inst_df['pct_held'], errors='coerce')
             inst_df['pct_change'] = pd.to_numeric(inst_df['pct_change'], errors='coerce')
             
-            inst_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change']
+            inst_df['timestamp'] = default_timestamp
+            inst_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
             for col in inst_cols:
                 if col not in inst_df.columns:
                     inst_df[col] = None
             inst_df = inst_df[inst_cols]
             
-            log_pipeline_info(f"Seeding {len(inst_df)} institutional holder records...")
+            log_pipeline_info(f"Seeding {len(inst_df)} institutional holder records with timestamp {default_timestamp}...")
             inst_df.to_sql(name="institutional_holders", con=engine, if_exists='append', index=False)
         else:
             log_pipeline_warning(f"Consolidated institutional file not found: {inst_file_path}")
@@ -177,13 +190,14 @@ def import_local_data(db: Session) -> dict:
             mutual_df['pct_held'] = pd.to_numeric(mutual_df['pct_held'], errors='coerce')
             mutual_df['pct_change'] = pd.to_numeric(mutual_df['pct_change'], errors='coerce')
             
-            mutual_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change']
+            mutual_df['timestamp'] = default_timestamp
+            mutual_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
             for col in mutual_cols:
                 if col not in mutual_df.columns:
                     mutual_df[col] = None
             mutual_df = mutual_df[mutual_cols]
             
-            log_pipeline_info(f"Seeding {len(mutual_df)} mutual fund holder records...")
+            log_pipeline_info(f"Seeding {len(mutual_df)} mutual fund holder records with timestamp {default_timestamp}...")
             mutual_df.to_sql(name="mutual_fund_holders", con=engine, if_exists='append', index=False)
         else:
             log_pipeline_warning(f"Consolidated mutual fund file not found: {mutual_file_path}")
@@ -233,7 +247,7 @@ def save_deep_data(data, folder_path, filename):
     except Exception as e:
         log_pipeline_warning(f"Could not write deep data file '{filename}': {e}")
 
-def process_single_ticker(symbol, config, db: Session, max_retries=3):
+def process_single_ticker(symbol, config, db: Session, run_time: str, max_retries=3):
     rps = config['performance']['requests_per_second']
     brackets = config['brackets']
     target_categories = config['target_categories']
@@ -276,7 +290,7 @@ def process_single_ticker(symbol, config, db: Session, max_retries=3):
                 # Other deep dive extractions can be done here if needed
             
             # Save/Update in database
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = run_time
             with db_lock:
                 # Upsert metadata
                 existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
@@ -307,7 +321,7 @@ def process_single_ticker(symbol, config, db: Session, max_retries=3):
             backoff *= 2
             
     # Fallback permanent failure entry
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = run_time
     with db_lock:
         existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
         if not existing:
@@ -331,19 +345,52 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
     global pipeline_logs
     pipeline_logs = []
     
-    log_pipeline_info("Initializing live scraping pipeline...")
+    run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_pipeline_info(f"Initializing live scraping pipeline (Run Timestamp: {run_time})...")
     
     try:
         config = load_config()
         output_folder_path = os.path.join(ROOT_DIR, config['storage']['output_folder'])
         os.makedirs(output_folder_path, exist_ok=True)
         
-        # 1. Fetch Nasdaq Symbols
-        all_symbols = get_nasdaq_symbols()
+        # 1. Fetch Symbols to process.
+        # Prioritize symbols already present in the database that belong to our target categories.
+        # Also compare with the live Nasdaq FTP listings to find any newly listed tickers.
+        target_categories = config.get('target_categories', ["Mega-Cap", "Large-Cap"])
+        target_db_symbols = []
+        try:
+            target_db_symbols = [s.symbol for s in db.query(StockMetadata.symbol).filter(
+                StockMetadata.category.in_(target_categories)
+            ).all()]
+        except Exception as e:
+            log_pipeline_warning(f"Could not read target symbols from database: {e}")
+            
+        nasdaq_symbols = []
+        try:
+            nasdaq_symbols = get_nasdaq_symbols()
+        except Exception as e:
+            log_pipeline_warning(f"Could not connect to Nasdaq FTP: {e}. Using empty list.")
+            
+        db_all_symbols = set()
+        try:
+            db_all_symbols = set(s.symbol for s in db.query(StockMetadata.symbol).all())
+        except Exception as e:
+            log_pipeline_warning(f"Could not query all database symbols: {e}")
+            
+        new_symbols = [s for s in nasdaq_symbols if s not in db_all_symbols]
+        if new_symbols:
+            log_pipeline_info(f"Discovered {len(new_symbols)} new symbols from Nasdaq FTP that are not in the database.")
+            
+        # Combine target existing symbols and any new FTP symbols (prioritize target_db_symbols first)
+        all_symbols = list(dict.fromkeys(target_db_symbols + new_symbols))
         
+        if not all_symbols:
+            # Fallback if database is completely empty and FTP failed
+            all_symbols = get_nasdaq_symbols()
+            
         # Limit symbols to process to prevent hitting yfinance limits or freezing
         symbols_to_process = all_symbols[:max_limit]
-        log_pipeline_info(f"Processing queue capped at {len(symbols_to_process)} tickers for development testing.")
+        log_pipeline_info(f"Processing queue capped at {len(symbols_to_process)} tickers for scraping.")
         
         max_workers = config['performance']['max_workers']
         completed_count = 0
@@ -351,7 +398,7 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
         # 2. Run Scraping & Category Insertion (Script 1)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ScreenerWorker") as executor:
             future_to_ticker = {
-                executor.submit(process_single_ticker, sym, config, db): sym 
+                executor.submit(process_single_ticker, sym, config, db, run_time): sym 
                 for sym in symbols_to_process
             }
             
@@ -368,7 +415,6 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
         log_pipeline_info("Running database consolidation for institutional and mutual fund holders...")
         
         # Query target symbols from DB
-        target_categories = config['target_categories']
         target_stocks = db.query(StockMetadata).filter(
             StockMetadata.category.in_(target_categories),
             StockMetadata.deep_dive_captured == "Yes"
@@ -377,10 +423,8 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
         target_symbols = [s.symbol for s in target_stocks]
         log_pipeline_info(f"Found {len(target_symbols)} symbols matching categories {target_categories} for holder consolidation.")
         
-        # Clean holders for target symbols to prevent duplicates
-        db.query(InstitutionalHolder).filter(InstitutionalHolder.ticker.in_(target_symbols)).delete(synchronize_session=False)
-        db.query(MutualFundHolder).filter(MutualFundHolder.ticker.in_(target_symbols)).delete(synchronize_session=False)
-        db.commit()
+        # NOTE: We no longer delete old records to support historical tracking over time.
+        # Instead, we append records with the current run execution timestamp.
         
         inst_records_count = 0
         mutual_records_count = 0
@@ -406,9 +450,10 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                         }
                         df = df.rename(columns=mapping)
                         df['ticker'] = symbol
+                        df['timestamp'] = run_time
                         
                         # Set default values for missing columns
-                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change']
+                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
                         for col in cols:
                             if col not in df.columns:
                                 df[col] = None
@@ -438,8 +483,9 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                         }
                         df = df.rename(columns=mapping)
                         df['ticker'] = symbol
+                        df['timestamp'] = run_time
                         
-                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change']
+                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
                         for col in cols:
                             if col not in df.columns:
                                 df[col] = None

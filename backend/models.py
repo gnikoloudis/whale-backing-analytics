@@ -37,6 +37,7 @@ class InstitutionalHolder(Base):
     shares = Column(BigInteger, nullable=True)
     value = Column(Float, nullable=True)
     pct_change = Column(Float, nullable=True)
+    timestamp = Column(String, nullable=True, index=True)
 
     stock = relationship("StockMetadata", back_populates="institutional_holders")
 
@@ -52,5 +53,6 @@ class MutualFundHolder(Base):
     shares = Column(BigInteger, nullable=True)
     value = Column(Float, nullable=True)
     pct_change = Column(Float, nullable=True)
+    timestamp = Column(String, nullable=True, index=True)
 
     stock = relationship("StockMetadata", back_populates="mutualfund_holders")
