@@ -463,12 +463,16 @@ if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
     
-    # Import SessionLocal relative to package
+    # Import SessionLocal, Base and engine relative to package
     try:
-        from .db import SessionLocal
+        from .db import SessionLocal, Base, engine
     except ImportError:
         # Fallback if run directly
-        from db import SessionLocal
+        from db import SessionLocal, Base, engine
+
+    # Deploy the schemas automatically (ensures Supabase tables exist before scraping)
+    print("Deploying database schemas...")
+    Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
     try:
