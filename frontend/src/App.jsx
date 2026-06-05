@@ -123,6 +123,106 @@ const MOCK_TICKER_HOLDERS = (symbol) => {
   };
 };
 
+// ==========================================
+// SUPABASE CLIENTLESS INTEGRATION (PRODUCTION OPTION 1)
+// ==========================================
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const isSupabaseMode = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+const supabaseFetch = async (path) => {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const res = await fetch(url, {
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  if (!res.ok) throw new Error(`Supabase PostgREST error: ${res.statusText}`);
+  return res.json();
+};
+
+const computeStatsFromData = (stocksList, instHolders, mfHolders) => {
+  const totalInst = instHolders.reduce((sum, h) => sum + (h.value || 0), 0);
+  const totalMf = mfHolders.reduce((sum, h) => sum + (h.value || 0), 0);
+  
+  const tickerToSector = {};
+  stocksList.forEach(s => {
+    tickerToSector[s.symbol] = s.sector || 'Unknown';
+  });
+
+  const instStockVals = {};
+  const instStockPcts = {};
+  const instStockCount = {};
+  instHolders.forEach(h => {
+    instStockVals[h.ticker] = (instStockVals[h.ticker] || 0) + (h.value || 0);
+    instStockPcts[h.ticker] = (instStockPcts[h.ticker] || 0) + (h.pct_held || 0);
+    instStockCount[h.ticker] = (instStockCount[h.ticker] || 0) + 1;
+  });
+  const topInstStocks = Object.keys(instStockVals).map(ticker => ({
+    ticker,
+    value: instStockVals[ticker],
+    avg_pct_held: instStockPcts[ticker] / (instStockCount[ticker] || 1)
+  })).sort((a, b) => b.value - a.value).slice(0, 10);
+
+  const mfStockVals = {};
+  const mfStockPcts = {};
+  const mfStockCount = {};
+  mfHolders.forEach(h => {
+    mfStockVals[h.ticker] = (mfStockVals[h.ticker] || 0) + (h.value || 0);
+    mfStockPcts[h.ticker] = (mfStockPcts[h.ticker] || 0) + (h.pct_held || 0);
+    mfStockCount[h.ticker] = (mfStockCount[h.ticker] || 0) + 1;
+  });
+  const topMfStocks = Object.keys(mfStockVals).map(ticker => ({
+    ticker,
+    value: mfStockVals[ticker],
+    avg_pct_held: mfStockPcts[ticker] / (mfStockCount[ticker] || 1)
+  })).sort((a, b) => b.value - a.value).slice(0, 10);
+
+  const whaleTotals = {};
+  instHolders.forEach(h => {
+    if (h.holder) whaleTotals[h.holder] = (whaleTotals[h.holder] || 0) + (h.value || 0);
+  });
+  mfHolders.forEach(h => {
+    if (h.holder) whaleTotals[h.holder] = (whaleTotals[h.holder] || 0) + (h.value || 0);
+  });
+  const topWhales = Object.keys(whaleTotals).map(holder => ({
+    holder,
+    total_value: whaleTotals[holder]
+  })).sort((a, b) => b.total_value - a.total_value).slice(0, 10);
+
+  const sectorTotals = {};
+  instHolders.forEach(h => {
+    const sector = tickerToSector[h.ticker] || 'Unknown';
+    if (sector !== 'Unknown' && sector !== 'Failed') {
+      sectorTotals[sector] = (sectorTotals[sector] || 0) + (h.value || 0);
+    }
+  });
+  mfHolders.forEach(h => {
+    const sector = tickerToSector[h.ticker] || 'Unknown';
+    if (sector !== 'Unknown' && sector !== 'Failed') {
+      sectorTotals[sector] = (sectorTotals[sector] || 0) + (h.value || 0);
+    }
+  });
+  const sectorWhaleBacking = Object.keys(sectorTotals).map(sector => ({
+    sector,
+    total_value: sectorTotals[sector]
+  })).sort((a, b) => b.total_value - a.total_value);
+
+  return {
+    summary: {
+      total_institutional_value: totalInst,
+      total_mutual_fund_value: totalMf,
+      total_combined_whale_value: totalInst + totalMf
+    },
+    top_institutional_stocks: topInstStocks,
+    top_mutual_fund_stocks: topMfStocks,
+    top_overall_whales: topWhales,
+    sector_whale_backing: sectorWhaleBacking
+  };
+};
+
 function App() {
   // Admin Mode Visibility Check: Only show if the URL contains the secret query param '?admin=true'
   const showAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
@@ -191,28 +291,67 @@ function App() {
   const fetchInitialData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch Status
-      const statusRes = await fetch(`${API_BASE_URL}/api/status`);
-      const statusData = await statusRes.json();
-      setStatus(statusData);
-      setIsApiOffline(false);
-      
-      // 2. Fetch Stocks
-      const stocksRes = await fetch(`${API_BASE_URL}/api/stocks`);
-      const stocksData = await stocksRes.json();
-      setStocks(stocksData);
-      
-      // 3. Fetch Stats
-      const statsRes = await fetch(`${API_BASE_URL}/api/holders/stats`);
-      const statsData = await statsRes.json();
-      setStats(statsData);
-      
-      // Set active ticker if stocks are loaded
-      if (stocksData.length > 0) {
-        setSelectedTicker(stocksData[0].symbol);
+      if (isSupabaseMode) {
+        // --- SUPABASE MODE ---
+        // 1. Fetch Stocks, Inst Holders, and Mutual Fund Holders in parallel
+        const [stocksData, instData, mfData] = await Promise.all([
+          supabaseFetch('stock_metadata?select=*&order=symbol'),
+          supabaseFetch('institutional_holders?select=*'),
+          supabaseFetch('mutual_fund_holders?select=*')
+        ]);
+        
+        setStocks(stocksData);
+        
+        // 2. Compute aggregate stats in memory (client-side)
+        const computedStats = computeStatsFromData(stocksData, instData, mfData);
+        setStats(computedStats);
+        
+        // 3. Set Status
+        setStatus({
+          status: "online (Supabase)",
+          database_type: "Supabase (PostgreSQL)",
+          pipeline_running: false,
+          counts: {
+            stocks: stocksData.length,
+            institutional_holders: instData.length,
+            mutual_fund_holders: mfData.length
+          }
+        });
+        setIsApiOffline(false);
+
+        // Set active ticker if stocks are loaded
+        const activeStocksList = stocksData.filter(s => s.deep_dive_captured === 'Yes');
+        if (activeStocksList.length > 0) {
+          setSelectedTicker(activeStocksList[0].symbol);
+        }
+      } else {
+        // --- LOCAL API MODE ---
+        // 1. Fetch Status
+        const statusRes = await fetch(`${API_BASE_URL}/api/status`);
+        const statusData = await statusRes.json();
+        setStatus(statusData);
+        setIsApiOffline(false);
+        
+        // 2. Fetch Stocks
+        const stocksRes = await fetch(`${API_BASE_URL}/api/stocks`);
+        const stocksData = await stocksRes.json();
+        setStocks(stocksData);
+        
+        // 3. Fetch Stats
+        const statsRes = await fetch(`${API_BASE_URL}/api/holders/stats`);
+        const statsData = await statsRes.json();
+        setStats(statsData);
+        
+        // Set active ticker if stocks are loaded
+        const activeStocksList = stocksData.filter(s => s.deep_dive_captured === 'Yes');
+        if (activeStocksList.length > 0) {
+          setSelectedTicker(activeStocksList[0].symbol);
+        } else if (stocksData.length > 0) {
+          setSelectedTicker(stocksData[0].symbol);
+        }
       }
     } catch (error) {
-      console.warn("Backend API offline. Switching to mock data.", error);
+      console.warn("API offline or failed. Switching to mock data.", error);
       setIsApiOffline(true);
       setStatus(MOCK_STATUS);
       setStocks(MOCK_STOCKS);
@@ -229,19 +368,46 @@ function App() {
         setTickerHolders(MOCK_TICKER_HOLDERS(ticker));
         return;
       }
-      const res = await fetch(`${API_BASE_URL}/api/holders/${ticker}`);
-      if (res.ok) {
-        const data = await res.json();
-        setTickerHolders(data);
+      
+      if (isSupabaseMode) {
+        // Query stock metadata with nested joins for institutional and mutual fund holders
+        const data = await supabaseFetch(`stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*)&symbol=eq.${ticker.toUpperCase() || ticker}`);
+        if (data && data.length > 0) {
+          const stockObj = data[0];
+          
+          // Sort lists descending by Value
+          const sortedInst = (stockObj.institutional_holders || []).sort((a, b) => (b.value || 0) - (a.value || 0));
+          const sortedMf = (stockObj.mutual_fund_holders || []).sort((a, b) => (b.value || 0) - (a.value || 0));
+          
+          setTickerHolders({
+            stock: {
+              symbol: stockObj.symbol,
+              market_cap: stockObj.market_cap,
+              category: stockObj.category,
+              sector: stockObj.sector,
+              industry: stockObj.industry
+            },
+            institutional_holders: sortedInst,
+            mutual_fund_holders: sortedMf
+          });
+        }
       } else {
-        console.error("Failed to load ticker holders detail");
+        const res = await fetch(`${API_BASE_URL}/api/holders/${ticker}`);
+        if (res.ok) {
+          const data = await res.json();
+          setTickerHolders(data);
+        } else {
+          console.error("Failed to load ticker holders detail");
+        }
       }
     } catch (error) {
+      console.error("Error loading ticker details", error);
       setTickerHolders(MOCK_TICKER_HOLDERS(ticker));
     }
   };
 
   const fetchPipelineLogs = async () => {
+    if (isSupabaseMode) return; // Background scraping running on GitHub Actions, logs not loaded from local API
     try {
       if (isApiOffline) return;
       const res = await fetch(`${API_BASE_URL}/api/pipeline/logs`);
