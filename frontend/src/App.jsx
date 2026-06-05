@@ -312,7 +312,7 @@ function App() {
         const mfQuery = latestTimestamp ? `mutual_fund_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'mutual_fund_holders?select=*';
         
         const [stocksData, instData, mfData] = await Promise.all([
-          supabaseFetch('stock_metadata?select=*&category=in.(Mega-Cap,Large-Cap)&order=symbol'),
+          supabaseFetch('stock_metadata?select=*&or=(category.eq.Mega-Cap,category.eq.Large-Cap)&order=symbol'),
           supabaseFetch(instQuery),
           supabaseFetch(mfQuery)
         ]);
@@ -586,8 +586,8 @@ function App() {
 
           {lastUpdated && !isApiOffline && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.02)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--card-border)', fontSize: '13px' }}>
-              <span style={{ color: 'var(--text-muted)' }}>Last Scraped:</span>
-              <span style={{ color: 'var(--accent-primary)', fontWeight: '600' }}>{lastUpdated}</span>
+              <span style={{ color: 'var(--text-muted)' }}>Last Update:</span>
+              <span style={{ color: 'var(--accent-primary)', fontWeight: '600' }}>{lastUpdated.split(' ')[0]}</span>
             </div>
           )}
 
