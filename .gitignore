@@ -1,0 +1,32 @@
+# Local scripts build for local usage
+1.build_catagories_of_stock_cap.py
+2.1.consildate_institutional_holders.py
+2.2.consildate_mutualfund_holders.py
+3.Portfolio_Allocator_Script.py
+4.Technical_analysis.py
+various.txt
+
+# Local database and system files
+*.db
+backend/local.db
+backend/__pycache__/
+.venv/
+venv/
+.idea/
+.vscode/
+market_data/
+
+# Frontend builds and dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*

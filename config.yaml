@@ -1,0 +1,45 @@
+# Network & Performance Configuration
+performance:
+  max_workers: 4
+  requests_per_second: 2  # Throughput regulator (Delay = 1 / RPS)
+  max_retries: 3
+
+# File Paths & Data Storage
+storage:
+  output_folder: "market_data"
+  master_file: "mega_large_nasdaq_categorized.csv"
+  progress_file: "mega_large_nasdaq_progress_log.csv"
+  institutional_file: "mega_large_nasdaq_institutional_holders_consolidated.csv"
+  mutualfund_file: "mega_large_nasdaq_mutualfund_holders_consolidated.csv"
+  allocation_file: "portfolio_allocation_plan.csv"
+  timeseries_output_file: "portfolio_signals_summary.json"
+# Market Cap Category Brackets (In Billions of USD)
+brackets:
+  mega_cap: 200.0
+  large_cap: 10.0
+  mid_cap: 2.0
+  small_cap: 0.3
+
+# Deep-Dive Property Filter: Select which categories get the deep object extractions
+# Options: ["Mega-Cap", "Large-Cap", "Mid-Cap", "Small-Cap", "Micro-Cap"]
+target_categories:
+  - "Mega-Cap"
+  - "Large-Cap"
+
+# Portfolio Optimization Parameters
+allocation:
+  total_investment_usd: 10000  # Total amount of money you want to invest
+  top_n_tickers: 10            # Number of top-backed stocks to buy
+
+indicators:
+  fast_sma: 10
+  slow_sma: 50
+  rsi_period: 14
+  rsi_buy_max: 60
+  rsi_sell_min: 40
+  adx_period: 14
+  adx_min_strength: 20
+  bb_period: 20
+  bb_std: 2.5
+  atr_period: 14
+  atr_multiplier: 3.5

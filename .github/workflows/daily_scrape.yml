@@ -1,0 +1,35 @@
+name: Daily Stock Scraper
+
+on:
+  schedule:
+    # Runs every day at 00:00 UTC (8 PM EST / 5 PM PST / 3 AM local time)
+    - cron: '0 0 * * *'
+  # Allows triggering the scraper manually from the GitHub Repository Actions tab
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv (Fast package manager)
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        # Install directly to system to speed up runner execution
+        run: uv pip install -r backend/requirements.txt --system
+
+      - name: Run Scraper Pipeline
+        env:
+          # Reads the Supabase database connection string stored in GitHub secrets
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # Runs the pipeline parsing up to 100 symbols
+        run: python -m backend.pipeline 100

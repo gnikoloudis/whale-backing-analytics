@@ -1,0 +1,9 @@
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Allow: /
+
+# Exclude admin query parameters if desired to prevent indexing draft states
+Disallow: /*?admin=true
+
+# Link to your production sitemap
+Sitemap: https://whale-backing-analytics.vercel.app/sitemap.xml
