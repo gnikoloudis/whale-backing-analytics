@@ -240,6 +240,7 @@ function App() {
   // Data State
   const [isApiOffline, setIsApiOffline] = useState(false);
   const [status, setStatus] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [stocks, setStocks] = useState([]);
   const [stats, setStats] = useState(null);
   const [selectedTicker, setSelectedTicker] = useState('AAPL');
@@ -300,11 +301,20 @@ function App() {
     try {
       if (isSupabaseMode) {
         // --- SUPABASE MODE ---
+        // 0. Query latest timestamp
+        const tsData = await supabaseFetch('stock_metadata?select=timestamp&order=timestamp.desc&limit=1');
+        const latestTimestamp = tsData && tsData.length > 0 ? tsData[0].timestamp : null;
+        setLastUpdated(latestTimestamp);
+        
         // 1. Fetch Stocks, Inst Holders, and Mutual Fund Holders in parallel
+        // Filter the holders by the latest timestamp so we don't fetch historical runs
+        const instQuery = latestTimestamp ? `institutional_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'institutional_holders?select=*';
+        const mfQuery = latestTimestamp ? `mutual_fund_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'mutual_fund_holders?select=*';
+        
         const [stocksData, instData, mfData] = await Promise.all([
-          supabaseFetch('stock_metadata?select=*&order=symbol'),
-          supabaseFetch('institutional_holders?select=*'),
-          supabaseFetch('mutual_fund_holders?select=*')
+          supabaseFetch('stock_metadata?select=*&category=in.(Mega-Cap,Large-Cap)&order=symbol'),
+          supabaseFetch(instQuery),
+          supabaseFetch(mfQuery)
         ]);
         
         setStocks(stocksData);
@@ -337,6 +347,7 @@ function App() {
         const statusRes = await fetch(`${API_BASE_URL}/api/status`);
         const statusData = await statusRes.json();
         setStatus(statusData);
+        setLastUpdated(statusData.last_updated);
         setIsApiOffline(false);
         
         // 2. Fetch Stocks
@@ -378,7 +389,14 @@ function App() {
       
       if (isSupabaseMode) {
         // Query stock metadata with nested joins for institutional and mutual fund holders
-        const data = await supabaseFetch(`stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*)&symbol=eq.${ticker.toUpperCase() || ticker}`);
+        // Filter the joined records to match the active lastUpdated timestamp
+        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*)&symbol=eq.${ticker.toUpperCase() || ticker}`;
+        if (lastUpdated) {
+          const encTs = encodeURIComponent(lastUpdated);
+          path += `&institutional_holders.timestamp=eq.${encTs}&mutual_fund_holders.timestamp=eq.${encTs}`;
+        }
+        
+        const data = await supabaseFetch(path);
         if (data && data.length > 0) {
           const stockObj = data[0];
           
@@ -563,6 +581,13 @@ function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.02)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--card-border)', fontSize: '13px' }}>
               <span style={{ width: '8px', height: '8px', background: 'var(--accent-secondary)', borderRadius: '50%', boxShadow: '0 0 8px var(--accent-secondary-glow)' }}></span>
               <span style={{ color: 'var(--text-secondary)' }}>DB: {status.database_type}</span>
+            </div>
+          )}
+
+          {lastUpdated && !isApiOffline && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.02)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--card-border)', fontSize: '13px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Last Scraped:</span>
+              <span style={{ color: 'var(--accent-primary)', fontWeight: '600' }}>{lastUpdated}</span>
             </div>
           )}
 
