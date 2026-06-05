@@ -10,7 +10,9 @@ if os.path.exists(env_path):
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, val = line.split("=", 1)
-                os.environ[key.strip()] = val.strip()
+                key = key.strip()
+                if key not in os.environ:
+                    os.environ[key] = val.strip()
 
 # Database selection:
 # If DATABASE_URL is provided in environment variables, connect to PostgreSQL (Supabase)

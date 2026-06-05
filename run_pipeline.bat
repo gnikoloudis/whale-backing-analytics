@@ -5,8 +5,20 @@ echo       STOCKS ^& WHALE ANALYTICS SUITE - PIPELINE TOOL
 echo ====================================================================
 echo.
 
-:: Configured Supabase connection string (retrieved from your workspace)
-set DATABASE_URL_SUPABASE=postgresql://postgres.qkeltvrbkeuiaccijfte:lI7NFa1kRTVMAnXq@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
+:: Load Supabase connection string from backend/.env if available
+set DATABASE_URL_SUPABASE=
+if exist backend\.env (
+    for /f "usebackq tokens=1,2 delims==" %%i in ("backend\.env") do (
+        if "%%i"=="DATABASE_URL" (
+            set DATABASE_URL_SUPABASE=%%j
+        )
+    )
+)
+
+:: If not found in .env, default to placeholder
+if "%DATABASE_URL_SUPABASE%"=="" (
+    set DATABASE_URL_SUPABASE=postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT-ID].supabase.co:5432/postgres
+)
 
 echo Select database target:
 echo [1] Local SQLite (local.db)
