@@ -429,6 +429,9 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
         inst_records_count = 0
         mutual_records_count = 0
         
+        all_inst_dfs = []
+        all_mf_dfs = []
+        
         for symbol in target_symbols:
             ticker_folder = os.path.join(output_folder_path, symbol)
             
@@ -459,8 +462,7 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                                 df[col] = None
                         df = df[cols]
                         
-                        # Ingest
-                        df.to_sql(name="institutional_holders", con=engine, if_exists="append", index=False)
+                        all_inst_dfs.append(df)
                         inst_records_count += len(df)
                 except Exception as e:
                     log_pipeline_warning(f"Error reading institutional holders CSV for {symbol}: {e}")
@@ -491,11 +493,22 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                                 df[col] = None
                         df = df[cols]
                         
-                        # Ingest
-                        df.to_sql(name="mutual_fund_holders", con=engine, if_exists="append", index=False)
+                        all_mf_dfs.append(df)
                         mutual_records_count += len(df)
                 except Exception as e:
                     log_pipeline_warning(f"Error reading mutual fund holders CSV for {symbol}: {e}")
+                    
+        # Ingest bulk institutional holders in one go
+        if all_inst_dfs:
+            log_pipeline_info(f"Uploading {inst_records_count} institutional holder rows in bulk to database...")
+            combined_inst_df = pd.concat(all_inst_dfs, ignore_index=True)
+            combined_inst_df.to_sql(name="institutional_holders", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
+            
+        # Ingest bulk mutual fund holders in one go
+        if all_mf_dfs:
+            log_pipeline_info(f"Uploading {mutual_records_count} mutual fund holder rows in bulk to database...")
+            combined_mf_df = pd.concat(all_mf_dfs, ignore_index=True)
+            combined_mf_df.to_sql(name="mutual_fund_holders", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
         
         log_pipeline_info(f"Scraper & Consolidation pipeline finished successfully!")
         log_pipeline_info(f"Loaded {completed_count} stock metadata entries, {inst_records_count} institutional records, and {mutual_records_count} mutual fund records.")
