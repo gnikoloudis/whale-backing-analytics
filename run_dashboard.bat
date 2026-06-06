@@ -7,7 +7,7 @@ echo.
 
 echo [1/2] Starting FastAPI Backend Server (Port: 8000)...
 echo.
-start "Stocks Backend API" cmd /k "uv run uvicorn backend.main:app --reload"
+start "Stocks Backend API" cmd /k "set DATABASE_URL=sqlite:///./local.db&& uv run uvicorn backend.main:app --reload"
 
 echo [2/2] Starting React Vite Frontend (Port: 5173)...
 echo.

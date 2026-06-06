@@ -24,6 +24,11 @@ class StockMetadata(Base):
         back_populates="stock", 
         cascade="all, delete-orphan"
     )
+    news = relationship(
+        "StockNews", 
+        back_populates="stock", 
+        cascade="all, delete-orphan"
+    )
 
 
 class InstitutionalHolder(Base):
@@ -56,3 +61,17 @@ class MutualFundHolder(Base):
     timestamp = Column(String, nullable=True, index=True)
 
     stock = relationship("StockMetadata", back_populates="mutualfund_holders")
+
+
+class StockNews(Base):
+    __tablename__ = "stock_news"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    ticker = Column(String, ForeignKey("stock_metadata.symbol", ondelete="CASCADE"), index=True, nullable=False)
+    title = Column(String, nullable=False)
+    publisher = Column(String, nullable=True)
+    link = Column(String, nullable=True)
+    publish_time = Column(BigInteger, nullable=True)
+    timestamp = Column(String, nullable=True, index=True)
+
+    stock = relationship("StockMetadata", back_populates="news")

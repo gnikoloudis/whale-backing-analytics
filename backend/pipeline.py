@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from .db import engine
-from .models import StockMetadata, InstitutionalHolder, MutualFundHolder
+from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews
 
 # Configure logging
 logger = logging.getLogger("pipeline")
@@ -199,11 +199,45 @@ def import_local_data(db: Session) -> dict:
             
             log_pipeline_info(f"Seeding {len(mutual_df)} mutual fund holder records with timestamp {default_timestamp}...")
             mutual_df.to_sql(name="mutual_fund_holders", con=engine, if_exists='append', index=False)
+        # 5. Ingest Stock News (Optional local seeding)
+        news_file_name = config['storage'].get('news_file', 'mega_large_nasdaq_news_consolidated.csv')
+        news_file_path = os.path.join(output_folder, news_file_name)
+        news_df = pd.DataFrame()
+        if os.path.exists(news_file_path):
+            log_pipeline_info(f"Reading consolidated news file: {news_file_path}")
+            try:
+                news_df = pd.read_csv(news_file_path)
+                if not news_df.empty:
+                    mapping_news = {
+                        'Ticker': 'ticker',
+                        'Title': 'title',
+                        'Publisher': 'publisher',
+                        'Link': 'link',
+                        'PublishTime': 'publish_time',
+                        'Timestamp': 'timestamp'
+                    }
+                    news_df = news_df.rename(columns=mapping_news)
+                    
+                    # Ensure symbol constraint
+                    valid_symbols = set(master_df['symbol'].tolist())
+                    news_df = news_df[news_df['ticker'].isin(valid_symbols)]
+                    
+                    news_df['timestamp'] = default_timestamp
+                    news_cols = ['ticker', 'title', 'publisher', 'link', 'publish_time', 'timestamp']
+                    for col in news_cols:
+                        if col not in news_df.columns:
+                            news_df[col] = None
+                    news_df = news_df[news_cols]
+                    
+                    log_pipeline_info(f"Seeding {len(news_df)} stock news records with timestamp {default_timestamp}...")
+                    news_df.to_sql(name="stock_news", con=engine, if_exists='append', index=False)
+            except Exception as e:
+                log_pipeline_warning(f"Failed to seed news data: {e}")
         else:
-            log_pipeline_warning(f"Consolidated mutual fund file not found: {mutual_file_path}")
+            log_pipeline_info("No consolidated news file found. Skipping news seeding (normal behavior).")
             
         log_pipeline_info("Local seeding completed successfully!")
-        return {"status": "success", "metadata_count": len(master_df), "inst_count": len(inst_df) if os.path.exists(inst_file_path) else 0, "mutual_count": len(mutual_df) if os.path.exists(mutual_file_path) else 0}
+        return {"status": "success", "metadata_count": len(master_df), "inst_count": len(inst_df) if os.path.exists(inst_file_path) else 0, "mutual_count": len(mutual_df) if os.path.exists(mutual_file_path) else 0, "news_count": len(news_df) if not news_df.empty else 0}
         
     except Exception as e:
         log_pipeline_error(f"Failed to seed local data: {e}")
@@ -285,8 +319,49 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
                 except: pass
                 try: save_deep_data(stock.institutional_holders, ticker_dir, "institutional_holders")
                 except: pass
-                try: save_deep_data(stock.mutualfund_holders, ticker_dir, "mutualfund_holders")
-                except: pass
+                try:
+                    news_data = stock.news
+                    if news_data:
+                        articles = []
+                        for article in news_data[:5]: # Cap at top 5
+                            content = article.get('content', {})
+                            if content:
+                                title = content.get('title')
+                                publisher = content.get('provider', {}).get('displayName', 'Yahoo Finance')
+                                link = content.get('canonicalUrl', {}).get('url')
+                                pub_date_str = content.get('pubDate')
+                                publish_time = None
+                                if pub_date_str:
+                                    try:
+                                        cleaned_date = pub_date_str.replace('Z', '')
+                                        dt = datetime.fromisoformat(cleaned_date)
+                                        publish_time = int(dt.timestamp())
+                                    except Exception:
+                                        publish_time = int(time.time())
+                                if title:
+                                    articles.append({
+                                        'title': title,
+                                        'publisher': publisher,
+                                        'link': link,
+                                        'publish_time': publish_time
+                                    })
+                            else:
+                                title = article.get('title')
+                                publisher = article.get('publisher', 'Yahoo Finance')
+                                link = article.get('link')
+                                publish_time = article.get('providerPublishTime')
+                                if title:
+                                    articles.append({
+                                        'title': title,
+                                        'publisher': publisher,
+                                        'link': link,
+                                        'publish_time': publish_time
+                                    })
+                        if articles:
+                            news_df = pd.DataFrame(articles)
+                            save_deep_data(news_df, ticker_dir, "news")
+                except Exception as e:
+                    log_pipeline_warning(f"Could not scrape news for {symbol}: {e}")
                 # Other deep dive extractions can be done here if needed
             
             # Save/Update in database
@@ -432,9 +507,11 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
         
         inst_records_count = 0
         mutual_records_count = 0
+        news_records_count = 0
         
         all_inst_dfs = []
         all_mf_dfs = []
+        all_news_dfs = []
         
         for symbol in target_symbols:
             ticker_folder = os.path.join(output_folder_path, symbol)
@@ -501,6 +578,26 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                         mutual_records_count += len(df)
                 except Exception as e:
                     log_pipeline_warning(f"Error reading mutual fund holders CSV for {symbol}: {e}")
+            
+            # Consolidate Stock News
+            news_path = os.path.join(ticker_folder, "news.csv")
+            if os.path.exists(news_path):
+                try:
+                    df = pd.read_csv(news_path)
+                    if not df.empty:
+                        df['ticker'] = symbol
+                        df['timestamp'] = run_time
+                        
+                        cols = ['ticker', 'title', 'publisher', 'link', 'publish_time', 'timestamp']
+                        for col in cols:
+                            if col not in df.columns:
+                                df[col] = None
+                        df = df[cols]
+                        
+                        all_news_dfs.append(df)
+                        news_records_count += len(df)
+                except Exception as e:
+                    log_pipeline_warning(f"Error reading news CSV for {symbol}: {e}")
                     
         # Ingest bulk institutional holders in one go
         if all_inst_dfs:
@@ -513,10 +610,16 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
             log_pipeline_info(f"Uploading {mutual_records_count} mutual fund holder rows in bulk to database...")
             combined_mf_df = pd.concat(all_mf_dfs, ignore_index=True)
             combined_mf_df.to_sql(name="mutual_fund_holders", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
+            
+        # Ingest bulk stock news in one go
+        if all_news_dfs:
+            log_pipeline_info(f"Uploading {news_records_count} stock news rows in bulk to database...")
+            combined_news_df = pd.concat(all_news_dfs, ignore_index=True)
+            combined_news_df.to_sql(name="stock_news", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
         
         log_pipeline_info(f"Scraper & Consolidation pipeline finished successfully!")
-        log_pipeline_info(f"Loaded {completed_count} stock metadata entries, {inst_records_count} institutional records, and {mutual_records_count} mutual fund records.")
-        return {"status": "success", "stocks_scraped": completed_count, "inst_records": inst_records_count, "mutual_records": mutual_records_count}
+        log_pipeline_info(f"Loaded {completed_count} stock metadata entries, {inst_records_count} institutional records, {mutual_records_count} mutual fund records, and {news_records_count} news records.")
+        return {"status": "success", "stocks_scraped": completed_count, "inst_records": inst_records_count, "mutual_records": mutual_records_count, "news_records": news_records_count}
         
     except Exception as e:
         log_pipeline_error(f"Pipeline crashed: {e}")

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 
 from .db import engine, Base, get_db
-from .models import StockMetadata, InstitutionalHolder, MutualFundHolder
+from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews
 from . import pipeline
 
 # Create tables in SQLite or PostgreSQL
@@ -301,6 +301,11 @@ def get_ticker_holders(ticker: str, timestamp: str = Query(None), db: Session = 
         mf_query = mf_query.filter(MutualFundHolder.timestamp == timestamp)
     mf_holders = mf_query.order_by(desc(MutualFundHolder.value)).all()
     
+    news_query = db.query(StockNews).filter_by(ticker=ticker.upper())
+    if timestamp:
+        news_query = news_query.filter(StockNews.timestamp == timestamp)
+    stock_news = news_query.order_by(desc(StockNews.publish_time)).all()
+    
     return {
         "stock": {
             "symbol": stock.symbol,
@@ -311,5 +316,6 @@ def get_ticker_holders(ticker: str, timestamp: str = Query(None), db: Session = 
         },
         "institutional_holders": inst_holders,
         "mutual_fund_holders": mf_holders,
+        "news": stock_news,
         "last_updated": timestamp
     }

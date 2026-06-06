@@ -120,7 +120,8 @@ const MOCK_TICKER_HOLDERS = (symbol) => {
       { ticker: symbol, holder: "Vanguard 500 Index Fund", shares: Math.round(mfVal * 0.0018), value: mfVal * 0.28, pct_held: 0.0210, date_reported: "2026-03-31", pct_change: 0.021 },
       { ticker: symbol, holder: "Fidelity 500 Index Fund", shares: Math.round(mfVal * 0.001), value: mfVal * 0.15, pct_held: 0.0105, date_reported: "2026-03-31", pct_change: -0.005 },
       { ticker: symbol, holder: "SPDR S&P 500 ETF Trust", shares: Math.round(mfVal * 0.0009), value: mfVal * 0.12, pct_held: 0.0098, date_reported: "2026-03-31", pct_change: 0.0 }
-    ]
+    ],
+    news: []
   };
 };
 
@@ -129,7 +130,17 @@ const MOCK_TICKER_HOLDERS = (symbol) => {
 // ==========================================
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-const isSupabaseMode = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+// Smart database mode detection:
+// 1. Check URL parameters for overrides (e.g. ?supabase=true or ?local=true)
+// 2. By default, if running on localhost/127.0.0.1, prioritize Local API Mode (SQLite)
+// 3. In production, use Supabase Mode if credentials are provided
+const urlParams = new URLSearchParams(window.location.search);
+const forceSupabase = urlParams.get('supabase') === 'true';
+const forceLocal = urlParams.get('local') === 'true';
+const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+const isSupabaseMode = forceSupabase || (!!(SUPABASE_URL && SUPABASE_ANON_KEY) && !forceLocal && !isLocalhost);
+
 
 const supabaseFetch = async (path) => {
   const cleanBaseUrl = SUPABASE_URL.replace(/\/+$/, '');
@@ -416,10 +427,10 @@ function App() {
       if (isSupabaseMode) {
         // Query stock metadata with nested joins for institutional and mutual fund holders
         // Filter the joined records to match the active lastUpdated timestamp
-        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*)&symbol=eq.${ticker.toUpperCase() || ticker}`;
+        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*),stock_news(*)&symbol=eq.${ticker.toUpperCase() || ticker}`;
         if (lastUpdated) {
           const encTs = encodeURIComponent(lastUpdated);
-          path += `&institutional_holders.timestamp=eq.${encTs}&mutual_fund_holders.timestamp=eq.${encTs}`;
+          path += `&institutional_holders.timestamp=eq.${encTs}&mutual_fund_holders.timestamp=eq.${encTs}&stock_news.timestamp=eq.${encTs}`;
         }
         
         const data = await supabaseFetch(path);
@@ -439,7 +450,8 @@ function App() {
               industry: stockObj.industry
             },
             institutional_holders: sortedInst,
-            mutual_fund_holders: sortedMf
+            mutual_fund_holders: sortedMf,
+            news: stockObj.stock_news || []
           });
         }
       } else {
@@ -1058,6 +1070,12 @@ function App() {
                     >
                       Mutual Fund Holders ({tickerHolders.mutual_fund_holders.length})
                     </button>
+                    <button 
+                      className={`card-tab ${holdersTab === 'news' ? 'active' : ''}`}
+                      onClick={() => setHoldersTab('news')}
+                    >
+                      Latest News ({(tickerHolders.news || []).length})
+                    </button>
                   </div>
 
                   <div className="table-container">
@@ -1103,7 +1121,7 @@ function App() {
                           </tbody>
                         </table>
                       )
-                    ) : (
+                    ) : holdersTab === 'mutual' ? (
                       tickerHolders.mutual_fund_holders.length === 0 ? (
                         <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
                           No mutual fund holders data loaded for this ticker.
@@ -1144,6 +1162,42 @@ function App() {
                             ))}
                           </tbody>
                         </table>
+                      )
+                    ) : (
+                      !tickerHolders.news || tickerHolders.news.length === 0 ? (
+                        <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                          No news articles found for this ticker. Run "Scrape Live" to fetch latest news.
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '10px 4px' }}>
+                          {tickerHolders.news.map((article, idx) => {
+                            const dateStr = article.publish_time 
+                              ? new Date(article.publish_time * 1000).toLocaleDateString('en-US', {
+                                  year: 'numeric',
+                                  month: 'short',
+                                  day: 'numeric'
+                                })
+                              : 'N/A';
+                            return (
+                              <div key={idx} className="glass-card" style={{ padding: '16px', background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255, 255, 255, 0.03)', borderRadius: '10px' }}>
+                                <a 
+                                  href={article.link} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  style={{ fontWeight: '600', fontSize: '15px', color: '#f8fafc', textDecoration: 'none', display: 'inline-block', marginBottom: '8px' }}
+                                  className="interactive"
+                                >
+                                  {article.title}
+                                </a>
+                                <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                  <span style={{ color: 'var(--accent-primary)', fontWeight: '500' }}>{article.publisher}</span>
+                                  <span>•</span>
+                                  <span>{dateStr}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
                       )
                     )}
                   </div>
