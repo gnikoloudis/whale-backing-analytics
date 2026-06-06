@@ -605,8 +605,8 @@ function App() {
 
           {status && !isApiOffline && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.02)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--card-border)', fontSize: '13px' }}>
-              <span style={{ width: '8px', height: '8px', background: 'var(--accent-secondary)', borderRadius: '50%', boxShadow: '0 0 8px var(--accent-secondary-glow)' }}></span>
-              <span style={{ color: 'var(--text-secondary)' }}>DB: {status.database_type}</span>
+              <span style={{ width: '8px', height: '8px', background: '#10b981', borderRadius: '50%', boxShadow: '0 0 8px rgba(16, 185, 129, 0.4)' }}></span>
+              <span style={{ color: 'var(--text-secondary)', fontWeight: '500' }}>Status: Online</span>
             </div>
           )}
 
