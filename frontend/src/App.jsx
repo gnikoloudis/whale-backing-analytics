@@ -18,6 +18,7 @@ import {
   ChevronRight,
   TrendingDown
 } from 'lucide-react';
+import AdBanner from './components/AdBanner';
 
 // API URL (FastAPI backend port is 8000 by default)
 const API_BASE_URL = 'http://localhost:8000';
@@ -1157,6 +1158,9 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Google AdSense Footer Leaderboard (Option 1) */}
+      <AdBanner slotId="YOUR_SLOT_ID" format="horizontal" />
 
       {/* ==========================================
           FOOTER
