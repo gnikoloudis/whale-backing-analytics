@@ -1160,7 +1160,7 @@ function App() {
       )}
 
       {/* Google AdSense Footer Leaderboard (Option 1) */}
-      <AdBanner slotId="YOUR_SLOT_ID" format="horizontal" />
+      <AdBanner slotId="4670133083" format="horizontal" />
 
       {/* ==========================================
           FOOTER
