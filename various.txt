@@ -1,0 +1,4 @@
+supabase password: lI7NFa1kRTVMAnXq
+supabase connection string : postgresql://postgres.qkeltvrbkeuiaccijfte:lI7NFa1kRTVMAnXq@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
+
+

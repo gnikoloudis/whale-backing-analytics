@@ -1,10 +1,4 @@
 # Local scripts build for local usage
-1.build_catagories_of_stock_cap.py
-2.1.consildate_institutional_holders.py
-2.2.consildate_mutualfund_holders.py
-3.Portfolio_Allocator_Script.py
-4.Technical_analysis.py
-various.txt
 
 # Local database and system files
 *.db
@@ -30,3 +24,5 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+.agents/*
+.antigravity/*
