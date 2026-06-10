@@ -1,8 +1,6 @@
 name: Daily Stock Scraper
 
 on:
-  push:
-    branches: [ main ]
   schedule:
     # Runs every day at 00:00 UTC (8 PM EST / 5 PM PST / 3 AM local time)
     - cron: '0 0 * * *'
@@ -29,8 +27,6 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     
     steps:
       - name: Checkout code
@@ -60,11 +56,6 @@ jobs:
             fi
             echo "Manually triggered: Running pipeline in ${{ github.event.inputs.mode }} mode..."
             python -m backend.pipeline all ${{ github.event.inputs.mode }}
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            echo "Push triggered: Resetting database schema..."
-            python backend/reset_db.py
-            echo "Push triggered: Running verification pipeline on Supabase..."
-            python -m backend.pipeline 5 weekly
           else
             DAY_OF_WEEK=$(date +%u)
             if [ "$DAY_OF_WEEK" -eq 7 ]; then
@@ -76,20 +67,6 @@ jobs:
             fi
           fi
 
-      - name: Inspect Database State
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          echo "Running database inspection..."
-          python backend/inspect_db.py > backend/db_state.txt
-
-      - name: Commit and Push Inspection Results
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add backend/db_state.txt
-          git commit -m "Update database inspection results [skip ci]" || exit 0
-          git push
 
 
 
