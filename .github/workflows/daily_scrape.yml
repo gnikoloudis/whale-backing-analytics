@@ -1,6 +1,8 @@
 name: Daily Stock Scraper
 
 on:
+  push:
+    branches: [ main ]
   schedule:
     # Runs every day at 00:00 UTC (8 PM EST / 5 PM PST / 3 AM local time)
     - cron: '0 0 * * *'
@@ -15,6 +17,14 @@ on:
         options:
           - weekly
           - daily
+      reset_db:
+        description: 'Reset database schema before running (WARNING: drops all tables)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   scrape:
@@ -42,8 +52,17 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.reset_db }}" = "true" ]; then
+              echo "Resetting database schema..."
+              python backend/reset_db.py
+            fi
             echo "Manually triggered: Running pipeline in ${{ github.event.inputs.mode }} mode..."
             python -m backend.pipeline all ${{ github.event.inputs.mode }}
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "Push triggered: Resetting database schema..."
+            python backend/reset_db.py
+            echo "Push triggered: Running verification pipeline on Supabase..."
+            python -m backend.pipeline 5 weekly
           else
             DAY_OF_WEEK=$(date +%u)
             if [ "$DAY_OF_WEEK" -eq 7 ]; then
@@ -54,3 +73,4 @@ jobs:
               python -m backend.pipeline all daily
             fi
           fi
+
