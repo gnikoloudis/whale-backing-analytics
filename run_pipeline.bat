@@ -56,19 +56,29 @@ if "%action%"=="1" (
 )
 
 if "%action%"=="2" (
-    echo [1/1] Running live yfinance scraping pipeline...
-    uv run python -m backend.pipeline 1000
+    set limit=all
+    set /p limit="Enter number of stocks to process (enter a number or 'all', default: all): "
+    set scraper_mode=weekly
+    set /p scraper_mode="Enter execution mode (weekly or daily, default: weekly): "
+    echo.
+    echo [1/1] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
+    uv run python -m backend.pipeline %limit% %scraper_mode%
 )
 
 if "%action%"=="3" (
+    set limit=all
+    set /p limit="Enter number of stocks to process (enter a number or 'all', default: all): "
+    set scraper_mode=weekly
+    set /p scraper_mode="Enter execution mode (weekly or daily, default: weekly): "
+    echo.
     echo [1/3] Dropping and recreating database schemas...
     uv run python -m backend.reset_db
     echo.
     echo [2/3] Seeding database from local consolidated CSV files...
     uv run python -c "from backend.db import SessionLocal; from backend.pipeline import import_local_data; db=SessionLocal(); print(import_local_data(db)); db.close()"
     echo.
-    echo [3/3] Running live yfinance scraping pipeline...
-    uv run python -m backend.pipeline 1000
+    echo [3/3] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
+    uv run python -m backend.pipeline %limit% %scraper_mode%
 )
 
 echo.
