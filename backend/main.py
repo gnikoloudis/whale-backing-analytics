@@ -180,9 +180,8 @@ def get_holders_stats(
     - Top overall holding entities (whales)
     - Sector distributions based on whale holdings
     """
-    # Find the latest scrape timestamp if not specified
-    if not timestamp:
-        timestamp = db.query(func.max(StockMetadata.timestamp)).scalar()
+    # Find the latest scrape timestamp for reporting
+    latest_ts = db.query(func.max(StockMetadata.timestamp)).scalar()
         
     # 1. Top stocks by institutional backing value
     inst_query = db.query(
@@ -288,7 +287,7 @@ def get_holders_stats(
         "top_mutual_fund_stocks": [{"ticker": t, "value": v, "avg_pct_held": p} for t, v, p in top_mf_stocks],
         "top_overall_whales": top_whales_list,
         "sector_whale_backing": sector_list,
-        "last_updated": timestamp
+        "last_updated": timestamp or latest_ts
     }
 
 @app.get("/api/holders/{ticker}")
@@ -302,9 +301,6 @@ def get_ticker_holders(
     stock = db.query(StockMetadata).filter_by(symbol=ticker.upper()).first()
     if not stock:
         raise HTTPException(status_code=404, detail=f"Stock {ticker} not found")
-        
-    if not timestamp:
-        timestamp = db.query(func.max(StockMetadata.timestamp)).scalar()
         
     inst_query = db.query(InstitutionalHolder).filter_by(ticker=ticker.upper())
     if timestamp:
@@ -332,5 +328,5 @@ def get_ticker_holders(
         "institutional_holders": inst_holders,
         "mutual_fund_holders": mf_holders,
         "news": stock_news,
-        "last_updated": timestamp
+        "last_updated": timestamp or stock.timestamp
     }
