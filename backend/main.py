@@ -317,6 +317,35 @@ def get_ticker_holders(
         news_query = news_query.filter(StockNews.timestamp == timestamp)
     stock_news = news_query.order_by(desc(StockNews.publish_time)).all()
     
+    # Serialize and format date_reported on-the-fly for clean rendering of pre-existing records
+    inst_list = []
+    for h in inst_holders:
+        inst_list.append({
+            "id": h.id,
+            "ticker": h.ticker,
+            "date_reported": h.date_reported[:10] if h.date_reported else None,
+            "holder": h.holder,
+            "pct_held": h.pct_held,
+            "shares": h.shares,
+            "value": h.value,
+            "pct_change": h.pct_change,
+            "timestamp": h.timestamp
+        })
+        
+    mf_list = []
+    for h in mf_holders:
+        mf_list.append({
+            "id": h.id,
+            "ticker": h.ticker,
+            "date_reported": h.date_reported[:10] if h.date_reported else None,
+            "holder": h.holder,
+            "pct_held": h.pct_held,
+            "shares": h.shares,
+            "value": h.value,
+            "pct_change": h.pct_change,
+            "timestamp": h.timestamp
+        })
+        
     return {
         "stock": {
             "symbol": stock.symbol,
@@ -325,8 +354,8 @@ def get_ticker_holders(
             "sector": stock.sector,
             "industry": stock.industry
         },
-        "institutional_holders": inst_holders,
-        "mutual_fund_holders": mf_holders,
+        "institutional_holders": inst_list,
+        "mutual_fund_holders": mf_list,
         "news": stock_news,
         "last_updated": timestamp or stock.timestamp
     }
