@@ -156,6 +156,8 @@ def import_local_data(db: Session) -> dict:
             inst_df['value'] = pd.to_numeric(inst_df['value'], errors='coerce')
             inst_df['pct_held'] = pd.to_numeric(inst_df['pct_held'], errors='coerce')
             inst_df['pct_change'] = pd.to_numeric(inst_df['pct_change'], errors='coerce')
+            if 'date_reported' in inst_df.columns:
+                inst_df['date_reported'] = inst_df['date_reported'].apply(lambda x: str(x)[:10] if not pd.isna(x) else None)
             
             inst_df['timestamp'] = default_timestamp
             inst_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
@@ -195,6 +197,8 @@ def import_local_data(db: Session) -> dict:
             mutual_df['value'] = pd.to_numeric(mutual_df['value'], errors='coerce')
             mutual_df['pct_held'] = pd.to_numeric(mutual_df['pct_held'], errors='coerce')
             mutual_df['pct_change'] = pd.to_numeric(mutual_df['pct_change'], errors='coerce')
+            if 'date_reported' in mutual_df.columns:
+                mutual_df['date_reported'] = mutual_df['date_reported'].apply(lambda x: str(x)[:10] if not pd.isna(x) else None)
             
             mutual_df['timestamp'] = default_timestamp
             mutual_cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
@@ -376,7 +380,7 @@ def process_single_ticker(symbol, config, run_time: str, max_retries=3):
                                     holder_name = str(row['holder'])
                                     existing_holder = db.query(InstitutionalHolder).filter_by(ticker=symbol, holder=holder_name).first()
                                     
-                                    date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                    date_val = str(row['date_reported'])[:10] if not pd.isna(row.get('date_reported')) else None
                                     pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
                                     shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
                                     value_val = float(row['value']) if not pd.isna(row.get('value')) else None
@@ -431,7 +435,7 @@ def process_single_ticker(symbol, config, run_time: str, max_retries=3):
                                     holder_name = str(row['holder'])
                                     existing_holder = db.query(MutualFundHolder).filter_by(ticker=symbol, holder=holder_name).first()
                                     
-                                    date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                    date_val = str(row['date_reported'])[:10] if not pd.isna(row.get('date_reported')) else None
                                     pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
                                     shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
                                     value_val = float(row['value']) if not pd.isna(row.get('value')) else None
