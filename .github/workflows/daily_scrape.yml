@@ -79,6 +79,15 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           echo "Running database inspection..."
-          python backend/inspect_db.py
+          python backend/inspect_db.py > backend/db_state.txt
+
+      - name: Commit and Push Inspection Results
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add backend/db_state.txt
+          git commit -m "Update database inspection results [skip ci]" || exit 0
+          git push
+
 
 
