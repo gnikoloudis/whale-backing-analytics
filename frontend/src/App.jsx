@@ -86,8 +86,8 @@ function App() {
         setLastUpdated(latestTimestamp);
 
         // Fetch Stocks, Inst Holders, and Mutual Fund Holders in parallel
-        const instQuery = latestTimestamp ? `institutional_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'institutional_holders?select=*';
-        const mfQuery = latestTimestamp ? `mutual_fund_holders?select=*&timestamp=eq.${encodeURIComponent(latestTimestamp)}` : 'mutual_fund_holders?select=*';
+        const instQuery = 'institutional_holders?select=*';
+        const mfQuery = 'mutual_fund_holders?select=*';
 
         const [stocksData, instData, mfData] = await Promise.all([
           supabaseFetchAll('stock_metadata?select=*&or=(category.eq.Mega-Cap,category.eq.Large-Cap)&order=symbol'),
@@ -164,16 +164,23 @@ function App() {
 
       if (isSupabaseMode) {
         let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*),stock_news(*)&symbol=eq.${ticker.toUpperCase() || ticker}`;
-        if (lastUpdated) {
-          const encTs = encodeURIComponent(lastUpdated);
-          path += `&institutional_holders.timestamp=eq.${encTs}&mutual_fund_holders.timestamp=eq.${encTs}&stock_news.timestamp=eq.${encTs}`;
-        }
 
         const data = await supabaseFetch(path);
         if (data && data.length > 0) {
           const stockObj = data[0];
-          const sortedInst = (stockObj.institutional_holders || []).sort((a, b) => (b.value || 0) - (a.value || 0));
-          const sortedMf = (stockObj.mutual_fund_holders || []).sort((a, b) => (b.value || 0) - (a.value || 0));
+          const stockTimestamp = stockObj.timestamp;
+
+          // Filter holders to only include those matching the stock's own last scrape timestamp
+          const filteredInst = stockTimestamp
+            ? (stockObj.institutional_holders || []).filter(h => h.timestamp === stockTimestamp)
+            : (stockObj.institutional_holders || []);
+
+          const filteredMf = stockTimestamp
+            ? (stockObj.mutual_fund_holders || []).filter(h => h.timestamp === stockTimestamp)
+            : (stockObj.mutual_fund_holders || []);
+
+          const sortedInst = filteredInst.sort((a, b) => (b.value || 0) - (a.value || 0));
+          const sortedMf = filteredMf.sort((a, b) => (b.value || 0) - (a.value || 0));
 
           setTickerHolders({
             stock: {
