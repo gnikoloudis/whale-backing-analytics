@@ -261,16 +261,41 @@ def get_nasdaq_symbols():
     try:
         ftp = ftplib.FTP("ftp.nasdaqtrader.com")
         ftp.login("anonymous", "guest")
-        buffer = io.BytesIO()
-        ftp.retrbinary("RETR SymbolDirectory/nasdaqlisted.txt", buffer.write)
+
+        # 1. Fetch Nasdaq-listed securities
+        nasdaq_buffer = io.BytesIO()
+        ftp.retrbinary("RETR SymbolDirectory/nasdaqlisted.txt", nasdaq_buffer.write)
+        nasdaq_buffer.seek(0)
+
+        df_nasdaq = pd.read_csv(nasdaq_buffer, sep="|")
+        df_nasdaq = df_nasdaq.dropna(subset=['Symbol'])
+        df_nasdaq = df_nasdaq[
+            (df_nasdaq['Test Issue'] == 'N') &
+            (~df_nasdaq['Symbol'].str.contains("File Creation Time", na=False))
+        ]
+        nasdaq_symbols = df_nasdaq['Symbol'].str.strip().tolist()
+        log_pipeline_info(f"Retrieved {len(nasdaq_symbols)} Nasdaq-listed symbols.")
+
+        # 2. Fetch other-listed securities (NYSE, AMEX, ARCA)
+        other_buffer = io.BytesIO()
+        ftp.retrbinary("RETR SymbolDirectory/otherlisted.txt", other_buffer.write)
+        other_buffer.seek(0)
+
+        df_other = pd.read_csv(other_buffer, sep="|")
+        df_other = df_other.dropna(subset=['ACT Symbol'])
+        df_other = df_other[
+            (df_other['Test Issue'] == 'N') &
+            (~df_other['ACT Symbol'].str.contains("File Creation Time", na=False))
+        ]
+        other_symbols = df_other['ACT Symbol'].str.strip().tolist()
+        log_pipeline_info(f"Retrieved {len(other_symbols)} other-listed symbols (NYSE/AMEX/ARCA).")
+
         ftp.quit()
-        
-        buffer.seek(0)
-        df = pd.read_csv(buffer, sep="|")
-        df = df.dropna(subset=['Symbol'])
-        symbols = df[df['Test Issue'] == 'N']['Symbol'].tolist()
-        log_pipeline_info(f"Successfully retrieved {len(symbols)} active symbols from Nasdaq.")
-        return symbols
+
+        # Combine and deduplicate
+        all_symbols = list(dict.fromkeys(nasdaq_symbols + other_symbols))
+        log_pipeline_info(f"Total unique market symbols: {len(all_symbols)}")
+        return all_symbols
     except Exception as e:
         log_pipeline_error(f"Failed to fetch symbols from FTP: {e}")
         raise
