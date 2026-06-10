@@ -105,6 +105,10 @@ def run_test():
         
     except Exception as e:
         print(f"\nTEST FAILED: {e}", file=sys.stderr)
+        from backend.pipeline import pipeline_logs
+        print("\n--- PIPELINE LOGS FROM FAILED TEST ---")
+        for log in pipeline_logs:
+            print(log)
         sys.exit(1)
     finally:
         db.close()

@@ -12,7 +12,7 @@ import yfinance as yf
 from sqlalchemy.orm import Session
 from sqlalchemy import text, func, desc
 
-from .db import engine
+from .db import engine, SessionLocal
 from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews, TrackedSymbol
 
 # Configure logging
@@ -271,275 +271,283 @@ def get_nasdaq_symbols():
         log_pipeline_error(f"Failed to fetch symbols from FTP: {e}")
         raise
 
-def process_single_ticker(symbol, config, db: Session, run_time: str, max_retries=3):
+def process_single_ticker(symbol, config, run_time: str, max_retries=3):
     # Skip if already successfully processed today to support resuming/retrying
     today_str = run_time.split(" ")[0]
     try:
-        existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
-        if existing and existing.timestamp and existing.timestamp.startswith(today_str) and existing.category != "Failed":
-            return {"symbol": symbol, "category": existing.category, "deep_dive": existing.deep_dive_captured}
+        db = SessionLocal()
+        try:
+            existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
+            if existing and existing.timestamp and existing.timestamp.startswith(today_str) and existing.category != "Failed":
+                return {"symbol": symbol, "category": existing.category, "deep_dive": existing.deep_dive_captured}
+        finally:
+            db.close()
     except Exception as e:
         log_pipeline_warning(f"Could not check resume status for {symbol}: {e}")
 
-    rps = config['performance']['requests_per_second']
-    brackets = config['brackets']
-    target_categories = config['target_categories']
-    
-    time.sleep(1.0 / rps)
-    attempt = 0
-    backoff = 2
-    
-    while attempt < max_retries:
-        try:
-            stock = yf.Ticker(symbol)
-            info = stock.info
-            cap = info.get('marketCap', None)
-            sector = info.get('sector', 'Unknown')
-            industry = info.get('industry', 'Unknown')
-            
-            if cap and not pd.isna(cap):
-                billions = cap / 1e9
-                if billions >= brackets['mega_cap']: cat = "Mega-Cap"
-                elif brackets['large_cap'] <= billions < brackets['mega_cap']: cat = "Large-Cap"
-                elif brackets['mid_cap'] <= billions < brackets['large_cap']: cat = "Mid-Cap"
-                elif brackets['small_cap'] <= billions < brackets['mid_cap']: cat = "Small-Cap"
-                else: cat = "Micro-Cap"
-            else:
-                cap, cat = None, "Unknown"
-            
-            deep_dive_captured = "Yes" if cat in target_categories else "No"
-            
-            # Save/Update metadata in database BEFORE child records to satisfy Foreign Key constraints
-            timestamp = run_time
-            with db_lock:
-                # Upsert metadata
-                existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
-                if existing:
-                    existing.market_cap = cap
-                    existing.category = cat
-                    existing.sector = sector
-                    existing.industry = industry
-                    existing.deep_dive_captured = deep_dive_captured
-                    existing.timestamp = timestamp
+    db = SessionLocal()
+    try:
+        rps = config['performance']['requests_per_second']
+        brackets = config['brackets']
+        target_categories = config['target_categories']
+        
+        time.sleep(1.0 / rps)
+        attempt = 0
+        backoff = 2
+        
+        while attempt < max_retries:
+            try:
+                stock = yf.Ticker(symbol)
+                info = stock.info
+                cap = info.get('marketCap', None)
+                sector = info.get('sector', 'Unknown')
+                industry = info.get('industry', 'Unknown')
+                
+                if cap and not pd.isna(cap):
+                    billions = cap / 1e9
+                    if billions >= brackets['mega_cap']: cat = "Mega-Cap"
+                    elif brackets['large_cap'] <= billions < brackets['mega_cap']: cat = "Large-Cap"
+                    elif brackets['mid_cap'] <= billions < brackets['large_cap']: cat = "Mid-Cap"
+                    elif brackets['small_cap'] <= billions < brackets['mid_cap']: cat = "Small-Cap"
+                    else: cat = "Micro-Cap"
                 else:
-                    db.add(StockMetadata(
-                        symbol=symbol,
-                        market_cap=cap,
-                        category=cat,
-                        sector=sector,
-                        industry=industry,
-                        deep_dive_captured=deep_dive_captured,
-                        timestamp=timestamp
-                    ))
+                    cap, cat = None, "Unknown"
                 
-                # Append/upsert to tracked_symbols table if it satisfies target categories
-                if cat in target_categories:
-                    existing_tracked = db.query(TrackedSymbol).filter_by(symbol=symbol).first()
-                    if not existing_tracked:
-                        db.add(TrackedSymbol(symbol=symbol, category=cat))
+                deep_dive_captured = "Yes" if cat in target_categories else "No"
+                
+                # Save/Update metadata in database BEFORE child records to satisfy Foreign Key constraints
+                timestamp = run_time
+                with db_lock:
+                    # Upsert metadata
+                    existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
+                    if existing:
+                        existing.market_cap = cap
+                        existing.category = cat
+                        existing.sector = sector
+                        existing.industry = industry
+                        existing.deep_dive_captured = deep_dive_captured
+                        existing.timestamp = timestamp
                     else:
-                        existing_tracked.category = cat
-                        
-                db.commit()
+                        db.add(StockMetadata(
+                            symbol=symbol,
+                            market_cap=cap,
+                            category=cat,
+                            sector=sector,
+                            industry=industry,
+                            deep_dive_captured=deep_dive_captured,
+                            timestamp=timestamp
+                        ))
+                    
+                    # Append/upsert to tracked_symbols table if it satisfies target categories
+                    if cat in target_categories:
+                        existing_tracked = db.query(TrackedSymbol).filter_by(symbol=symbol).first()
+                        if not existing_tracked:
+                            db.add(TrackedSymbol(symbol=symbol, category=cat))
+                        else:
+                            existing_tracked.category = cat
+                            
+                    db.commit()
 
-            if cat in target_categories:
-                # 1. Institutional Holders (Upsert logic: update existing or append new)
-                try:
-                    inst_df = stock.institutional_holders
-                    if inst_df is not None and not inst_df.empty:
-                        mapping_inst = {
-                            'Date Reported': 'date_reported',
-                            'Holder': 'holder',
-                            'pctHeld': 'pct_held',
-                            'Shares': 'shares',
-                            'Value': 'value',
-                            'pctChange': 'pct_change',
-                            '% Out': 'pct_held',
-                            'Change': 'pct_change'
-                        }
-                        inst_df = inst_df.rename(columns=mapping_inst)
-                        inst_df['shares'] = pd.to_numeric(inst_df['shares'], errors='coerce')
-                        inst_df['value'] = pd.to_numeric(inst_df['value'], errors='coerce')
-                        inst_df['pct_held'] = pd.to_numeric(inst_df['pct_held'], errors='coerce')
-                        inst_df['pct_change'] = pd.to_numeric(inst_df['pct_change'], errors='coerce')
-                        
-                        with db_lock:
-                            for _, row in inst_df.iterrows():
-                                if pd.isna(row.get('holder')) or not row.get('holder'):
-                                    continue
-                                holder_name = str(row['holder'])
-                                existing_holder = db.query(InstitutionalHolder).filter_by(ticker=symbol, holder=holder_name).first()
-                                
-                                date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
-                                pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
-                                shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
-                                value_val = float(row['value']) if not pd.isna(row.get('value')) else None
-                                pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
-                                
-                                if existing_holder:
-                                    existing_holder.date_reported = date_val
-                                    existing_holder.pct_held = pct_held_val
-                                    existing_holder.shares = shares_val
-                                    existing_holder.value = value_val
-                                    existing_holder.pct_change = pct_change_val
-                                    existing_holder.timestamp = run_time
-                                else:
-                                    db.add(InstitutionalHolder(
-                                        ticker=symbol,
-                                        date_reported=date_val,
-                                        holder=holder_name,
-                                        pct_held=pct_held_val,
-                                        shares=shares_val,
-                                        value=value_val,
-                                        pct_change=pct_change_val,
-                                        timestamp=run_time
-                                    ))
-                            db.commit()
-                except Exception as e:
-                    log_pipeline_warning(f"Could not scrape/save institutional holders for {symbol}: {e}")
-                
-                # 2. Mutual Fund Holders (Upsert logic: update existing or append new)
-                try:
-                    mf_df = stock.mutualfund_holders
-                    if mf_df is not None and not mf_df.empty:
-                        mapping_mf = {
-                            'Date Reported': 'date_reported',
-                            'Holder': 'holder',
-                            'pctHeld': 'pct_held',
-                            'Shares': 'shares',
-                            'Value': 'value',
-                            'pctChange': 'pct_change',
-                            '% Out': 'pct_held',
-                            'Change': 'pct_change'
-                        }
-                        mf_df = mf_df.rename(columns=mapping_mf)
-                        mf_df['shares'] = pd.to_numeric(mf_df['shares'], errors='coerce')
-                        mf_df['value'] = pd.to_numeric(mf_df['value'], errors='coerce')
-                        mf_df['pct_held'] = pd.to_numeric(mf_df['pct_held'], errors='coerce')
-                        mf_df['pct_change'] = pd.to_numeric(mf_df['pct_change'], errors='coerce')
-                        
-                        with db_lock:
-                            for _, row in mf_df.iterrows():
-                                if pd.isna(row.get('holder')) or not row.get('holder'):
-                                    continue
-                                holder_name = str(row['holder'])
-                                existing_holder = db.query(MutualFundHolder).filter_by(ticker=symbol, holder=holder_name).first()
-                                
-                                date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
-                                pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
-                                shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
-                                value_val = float(row['value']) if not pd.isna(row.get('value')) else None
-                                pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
-                                
-                                if existing_holder:
-                                    existing_holder.date_reported = date_val
-                                    existing_holder.pct_held = pct_held_val
-                                    existing_holder.shares = shares_val
-                                    existing_holder.value = value_val
-                                    existing_holder.pct_change = pct_change_val
-                                    existing_holder.timestamp = run_time
-                                else:
-                                    db.add(MutualFundHolder(
-                                        ticker=symbol,
-                                        date_reported=date_val,
-                                        holder=holder_name,
-                                        pct_held=pct_held_val,
-                                        shares=shares_val,
-                                        value=value_val,
-                                        pct_change=pct_change_val,
-                                        timestamp=run_time
-                                    ))
-                            db.commit()
-                except Exception as e:
-                    log_pipeline_warning(f"Could not scrape/save mutual fund holders for {symbol}: {e}")
-                
-                # 3. Stock News (Append and keep 10 latest)
-                try:
-                    news_data = stock.news
-                    if news_data:
-                        articles = []
-                        for article in news_data[:5]:
-                            content = article.get('content', {})
-                            if content:
-                                title = content.get('title')
-                                publisher = content.get('provider', {}).get('displayName', 'Yahoo Finance')
-                                link = content.get('canonicalUrl', {}).get('url')
-                                pub_date_str = content.get('pubDate')
-                                publish_time = None
-                                if pub_date_str:
-                                    try:
-                                        cleaned_date = pub_date_str.replace('Z', '')
-                                        dt = datetime.fromisoformat(cleaned_date)
-                                        publish_time = int(dt.timestamp())
-                                    except Exception:
-                                        publish_time = int(time.time())
-                                if title:
-                                    articles.append({
-                                        'title': title,
-                                        'publisher': publisher,
-                                        'link': link,
-                                        'publish_time': publish_time
-                                    })
-                            else:
-                                title = article.get('title')
-                                publisher = article.get('publisher', 'Yahoo Finance')
-                                link = article.get('link')
-                                publish_time = article.get('providerPublishTime')
-                                if title:
-                                    articles.append({
-                                        'title': title,
-                                        'publisher': publisher,
-                                        'link': link,
-                                        'publish_time': publish_time
-                                    })
-                        if articles:
+                if cat in target_categories:
+                    # 1. Institutional Holders (Upsert logic: update existing or append new)
+                    try:
+                        inst_df = stock.institutional_holders
+                        if inst_df is not None and not inst_df.empty:
+                            mapping_inst = {
+                                'Date Reported': 'date_reported',
+                                'Holder': 'holder',
+                                'pctHeld': 'pct_held',
+                                'Shares': 'shares',
+                                'Value': 'value',
+                                'pctChange': 'pct_change',
+                                '% Out': 'pct_held',
+                                'Change': 'pct_change'
+                            }
+                            inst_df = inst_df.rename(columns=mapping_inst)
+                            inst_df['shares'] = pd.to_numeric(inst_df['shares'], errors='coerce')
+                            inst_df['value'] = pd.to_numeric(inst_df['value'], errors='coerce')
+                            inst_df['pct_held'] = pd.to_numeric(inst_df['pct_held'], errors='coerce')
+                            inst_df['pct_change'] = pd.to_numeric(inst_df['pct_change'], errors='coerce')
+                            
                             with db_lock:
-                                for article in articles:
-                                    # Avoid duplicate articles based on ticker and link
-                                    exists = db.query(StockNews).filter_by(ticker=symbol, link=article['link']).first()
-                                    if not exists:
-                                        db.add(StockNews(
+                                for _, row in inst_df.iterrows():
+                                    if pd.isna(row.get('holder')) or not row.get('holder'):
+                                        continue
+                                    holder_name = str(row['holder'])
+                                    existing_holder = db.query(InstitutionalHolder).filter_by(ticker=symbol, holder=holder_name).first()
+                                    
+                                    date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                    pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
+                                    shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
+                                    value_val = float(row['value']) if not pd.isna(row.get('value')) else None
+                                    pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
+                                    
+                                    if existing_holder:
+                                        existing_holder.date_reported = date_val
+                                        existing_holder.pct_held = pct_held_val
+                                        existing_holder.shares = shares_val
+                                        existing_holder.value = value_val
+                                        existing_holder.pct_change = pct_change_val
+                                        existing_holder.timestamp = run_time
+                                    else:
+                                        db.add(InstitutionalHolder(
                                             ticker=symbol,
-                                            title=article['title'],
-                                            publisher=article['publisher'],
-                                            link=article['link'],
-                                            publish_time=article['publish_time'],
+                                            date_reported=date_val,
+                                            holder=holder_name,
+                                            pct_held=pct_held_val,
+                                            shares=shares_val,
+                                            value=value_val,
+                                            pct_change=pct_change_val,
                                             timestamp=run_time
                                         ))
                                 db.commit()
-                                
-                                # Enforce maximum of 10 latest news items for this ticker
-                                all_news = db.query(StockNews).filter_by(ticker=symbol).order_by(desc(StockNews.publish_time)).all()
-                                if len(all_news) > 10:
-                                    for old_art in all_news[10:]:
-                                        db.delete(old_art)
+                    except Exception as e:
+                        log_pipeline_warning(f"Could not scrape/save institutional holders for {symbol}: {e}")
+                    
+                    # 2. Mutual Fund Holders (Upsert logic: update existing or append new)
+                    try:
+                        mf_df = stock.mutualfund_holders
+                        if mf_df is not None and not mf_df.empty:
+                            mapping_mf = {
+                                'Date Reported': 'date_reported',
+                                'Holder': 'holder',
+                                'pctHeld': 'pct_held',
+                                'Shares': 'shares',
+                                'Value': 'value',
+                                'pctChange': 'pct_change',
+                                '% Out': 'pct_held',
+                                'Change': 'pct_change'
+                            }
+                            mf_df = mf_df.rename(columns=mapping_mf)
+                            mf_df['shares'] = pd.to_numeric(mf_df['shares'], errors='coerce')
+                            mf_df['value'] = pd.to_numeric(mf_df['value'], errors='coerce')
+                            mf_df['pct_held'] = pd.to_numeric(mf_df['pct_held'], errors='coerce')
+                            mf_df['pct_change'] = pd.to_numeric(mf_df['pct_change'], errors='coerce')
+                            
+                            with db_lock:
+                                for _, row in mf_df.iterrows():
+                                    if pd.isna(row.get('holder')) or not row.get('holder'):
+                                        continue
+                                    holder_name = str(row['holder'])
+                                    existing_holder = db.query(MutualFundHolder).filter_by(ticker=symbol, holder=holder_name).first()
+                                    
+                                    date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                    pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
+                                    shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
+                                    value_val = float(row['value']) if not pd.isna(row.get('value')) else None
+                                    pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
+                                    
+                                    if existing_holder:
+                                        existing_holder.date_reported = date_val
+                                        existing_holder.pct_held = pct_held_val
+                                        existing_holder.shares = shares_val
+                                        existing_holder.value = value_val
+                                        existing_holder.pct_change = pct_change_val
+                                        existing_holder.timestamp = run_time
+                                    else:
+                                        db.add(MutualFundHolder(
+                                            ticker=symbol,
+                                            date_reported=date_val,
+                                            holder=holder_name,
+                                            pct_held=pct_held_val,
+                                            shares=shares_val,
+                                            value=value_val,
+                                            pct_change=pct_change_val,
+                                            timestamp=run_time
+                                        ))
+                                db.commit()
+                    except Exception as e:
+                        log_pipeline_warning(f"Could not scrape/save mutual fund holders for {symbol}: {e}")
+                    
+                    # 3. Stock News (Append and keep 10 latest)
+                    try:
+                        news_data = stock.news
+                        if news_data:
+                            articles = []
+                            for article in news_data[:5]:
+                                content = article.get('content', {})
+                                if content:
+                                    title = content.get('title')
+                                    publisher = content.get('provider', {}).get('displayName', 'Yahoo Finance')
+                                    link = content.get('canonicalUrl', {}).get('url')
+                                    pub_date_str = content.get('pubDate')
+                                    publish_time = None
+                                    if pub_date_str:
+                                        try:
+                                            cleaned_date = pub_date_str.replace('Z', '')
+                                            dt = datetime.fromisoformat(cleaned_date)
+                                            publish_time = int(dt.timestamp())
+                                        except Exception:
+                                            publish_time = int(time.time())
+                                    if title:
+                                        articles.append({
+                                            'title': title,
+                                            'publisher': publisher,
+                                            'link': link,
+                                            'publish_time': publish_time
+                                        })
+                                else:
+                                    title = article.get('title')
+                                    publisher = article.get('publisher', 'Yahoo Finance')
+                                    link = article.get('link')
+                                    publish_time = article.get('providerPublishTime')
+                                    if title:
+                                        articles.append({
+                                            'title': title,
+                                            'publisher': publisher,
+                                            'link': link,
+                                            'publish_time': publish_time
+                                        })
+                            if articles:
+                                with db_lock:
+                                    for article in articles:
+                                        # Avoid duplicate articles based on ticker and link
+                                        exists = db.query(StockNews).filter_by(ticker=symbol, link=article['link']).first()
+                                        if not exists:
+                                            db.add(StockNews(
+                                                ticker=symbol,
+                                                title=article['title'],
+                                                publisher=article['publisher'],
+                                                link=article['link'],
+                                                publish_time=article['publish_time'],
+                                                timestamp=run_time
+                                            ))
                                     db.commit()
-                except Exception as e:
-                    log_pipeline_warning(f"Could not scrape/save news for {symbol}: {e}")
-            
-            return {"symbol": symbol, "category": cat, "deep_dive": deep_dive_captured}
-            
-        except Exception as e:
-            attempt += 1
-            time.sleep(backoff)
-            backoff *= 2
-            
-    # Fallback permanent failure entry
-    timestamp = run_time
-    with db_lock:
-        existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
-        if not existing:
-            db.add(StockMetadata(
-                symbol=symbol,
-                market_cap=None,
-                category="Failed",
-                sector="Failed",
-                industry="Failed",
-                deep_dive_captured="Failed",
-                timestamp=timestamp
-            ))
-            db.commit()
-    return {"symbol": symbol, "category": "Failed", "deep_dive": "Failed"}
+                                    
+                                    # Enforce maximum of 10 latest news items for this ticker
+                                    all_news = db.query(StockNews).filter_by(ticker=symbol).order_by(desc(StockNews.publish_time)).all()
+                                    if len(all_news) > 10:
+                                        for old_art in all_news[10:]:
+                                            db.delete(old_art)
+                                        db.commit()
+                    except Exception as e:
+                        log_pipeline_warning(f"Could not scrape/save news for {symbol}: {e}")
+                
+                return {"symbol": symbol, "category": cat, "deep_dive": deep_dive_captured}
+                
+            except Exception as e:
+                attempt += 1
+                time.sleep(backoff)
+                backoff *= 2
+                
+        # Fallback permanent failure entry
+        timestamp = run_time
+        with db_lock:
+            existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
+            if not existing:
+                db.add(StockMetadata(
+                    symbol=symbol,
+                    market_cap=None,
+                    category="Failed",
+                    sector="Failed",
+                    industry="Failed",
+                    deep_dive_captured="Failed",
+                    timestamp=timestamp
+                ))
+                db.commit()
+        return {"symbol": symbol, "category": "Failed", "deep_dive": "Failed"}
+    finally:
+        db.close()
 
 def run_scraping_pipeline(db: Session, max_limit: int = 20, mode: str = "weekly"):
     """
@@ -609,7 +617,7 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20, mode: str = "weekly"
         # 2. Run Scraping & Real-Time Ingestion
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ScreenerWorker") as executor:
             future_to_ticker = {
-                executor.submit(process_single_ticker, sym, config, db, run_time): sym 
+                executor.submit(process_single_ticker, sym, config, run_time): sym 
                 for sym in symbols_to_process
             }
             

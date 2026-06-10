@@ -40,7 +40,8 @@ else:
             DATABASE_URL += "&sslmode=require"
         else:
             DATABASE_URL += "?sslmode=require"
-    engine = create_engine(DATABASE_URL)
+    from sqlalchemy.pool import NullPool
+    engine = create_engine(DATABASE_URL, poolclass=NullPool)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
