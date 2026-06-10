@@ -6,6 +6,8 @@ import KpiMetrics from './components/KpiMetrics';
 import DashboardOverview from './components/DashboardOverview';
 import TickerDirectory from './components/TickerDirectory';
 import TickerDetails from './components/TickerDetails';
+import { SpeedInsights } from '@vercel/speed-insights/react';
+
 import {
   API_BASE_URL,
   isSupabaseMode,
@@ -397,6 +399,9 @@ function App() {
           <span>Supabase Ready</span>
         </div>
       </footer>
+      <div>
+        <SpeedInsights />
+      </div>
     </div>
   );
 }
