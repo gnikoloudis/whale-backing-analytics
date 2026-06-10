@@ -648,6 +648,18 @@ if __name__ == "__main__":
     print("Deploying database schemas...")
     Base.metadata.create_all(bind=engine)
 
+    # Automatically enable RLS and create public read policies on PostgreSQL if created
+    if engine.dialect.name != 'sqlite':
+        print("Automatically enabling RLS and creating public read policies (PostgreSQL)...")
+        from sqlalchemy import text
+        tables = ["stock_metadata", "institutional_holders", "mutual_fund_holders", "stock_news", "tracked_symbols"]
+        with engine.connect() as conn:
+            for table in tables:
+                conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;"))
+                conn.execute(text(f"DROP POLICY IF EXISTS \"Allow public read access\" ON {table};"))
+                conn.execute(text(f"CREATE POLICY \"Allow public read access\" ON {table} FOR SELECT TO anon, authenticated USING (true);"))
+            conn.commit()
+
     db = SessionLocal()
     try:
         print("--- STARTING SCHEDULER PIPELINE SCRAPE ---")
