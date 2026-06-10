@@ -6,6 +6,15 @@ on:
     - cron: '0 0 * * *'
   # Allows triggering the scraper manually from the GitHub Repository Actions tab
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scraper execution mode (weekly or daily)'
+        required: true
+        default: 'weekly'
+        type: choice
+        options:
+          - weekly
+          - daily
 
 jobs:
   scrape:
@@ -31,5 +40,17 @@ jobs:
         env:
           # Reads the Supabase database connection string stored in GitHub secrets
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        # Runs the pipeline parsing all symbols matching target categories and new symbols
-        run: python -m backend.pipeline all
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manually triggered: Running pipeline in ${{ github.event.inputs.mode }} mode..."
+            python -m backend.pipeline all ${{ github.event.inputs.mode }}
+          else
+            DAY_OF_WEEK=$(date +%u)
+            if [ "$DAY_OF_WEEK" -eq 7 ]; then
+              echo "Scheduled Sunday: Running weekly pipeline list refresh..."
+              python -m backend.pipeline all weekly
+            else
+              echo "Scheduled Daily: Running daily pipeline updates..."
+              python -m backend.pipeline all daily
+            fi
+          fi
