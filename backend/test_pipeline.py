@@ -16,6 +16,7 @@ def run_test():
     
     # 1. Recreate tables
     print("Recreating database tables...")
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     
     db = SessionLocal()

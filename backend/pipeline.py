@@ -298,10 +298,42 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
             else:
                 cap, cat = None, "Unknown"
             
-            deep_dive_captured = "No"
-            if cat in target_categories:
-                deep_dive_captured = "Yes"
+            deep_dive_captured = "Yes" if cat in target_categories else "No"
+            
+            # Save/Update metadata in database BEFORE child records to satisfy Foreign Key constraints
+            timestamp = run_time
+            with db_lock:
+                # Upsert metadata
+                existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
+                if existing:
+                    existing.market_cap = cap
+                    existing.category = cat
+                    existing.sector = sector
+                    existing.industry = industry
+                    existing.deep_dive_captured = deep_dive_captured
+                    existing.timestamp = timestamp
+                else:
+                    db.add(StockMetadata(
+                        symbol=symbol,
+                        market_cap=cap,
+                        category=cat,
+                        sector=sector,
+                        industry=industry,
+                        deep_dive_captured=deep_dive_captured,
+                        timestamp=timestamp
+                    ))
                 
+                # Append/upsert to tracked_symbols table if it satisfies target categories
+                if cat in target_categories:
+                    existing_tracked = db.query(TrackedSymbol).filter_by(symbol=symbol).first()
+                    if not existing_tracked:
+                        db.add(TrackedSymbol(symbol=symbol, category=cat))
+                    else:
+                        existing_tracked.category = cat
+                        
+                db.commit()
+
+            if cat in target_categories:
                 # 1. Institutional Holders (Upsert logic: update existing or append new)
                 try:
                     inst_df = stock.institutional_holders
@@ -476,39 +508,6 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
                 except Exception as e:
                     log_pipeline_warning(f"Could not scrape/save news for {symbol}: {e}")
             
-            # Save/Update in database
-            timestamp = run_time
-            with db_lock:
-                # Upsert metadata
-                existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
-                if existing:
-                    existing.market_cap = cap
-                    existing.category = cat
-                    existing.sector = sector
-                    existing.industry = industry
-                    existing.deep_dive_captured = deep_dive_captured
-                    existing.timestamp = timestamp
-                else:
-                    db.add(StockMetadata(
-                        symbol=symbol,
-                        market_cap=cap,
-                        category=cat,
-                        sector=sector,
-                        industry=industry,
-                        deep_dive_captured=deep_dive_captured,
-                        timestamp=timestamp
-                    ))
-                
-                # Append/upsert to tracked_symbols table if it satisfies target categories
-                if cat in target_categories:
-                    existing_tracked = db.query(TrackedSymbol).filter_by(symbol=symbol).first()
-                    if not existing_tracked:
-                        db.add(TrackedSymbol(symbol=symbol, category=cat))
-                    else:
-                        existing_tracked.category = cat
-                        
-                db.commit()
-                
             return {"symbol": symbol, "category": cat, "deep_dive": deep_dive_captured}
             
         except Exception as e:
