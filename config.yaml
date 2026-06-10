@@ -3,7 +3,7 @@
 
 performance:
   requests_per_second: 5
-  max_workers: 5
+  max_workers: 10
 
 brackets:
   mega_cap: 200.0

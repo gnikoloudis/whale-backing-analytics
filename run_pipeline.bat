@@ -8,7 +8,7 @@ echo.
 :: Load Supabase connection string from backend/.env if available
 set DATABASE_URL_SUPABASE=
 if exist backend\.env (
-    for /f "usebackq tokens=1,2 delims==" %%i in ("backend\.env") do (
+    for /f "usebackq tokens=1,* delims==" %%i in ("backend\.env") do (
         if "%%i"=="DATABASE_URL" (
             set DATABASE_URL_SUPABASE=%%j
         )
@@ -47,6 +47,15 @@ echo.
 echo ====================================================================
 echo.
 
+:: Only prompt for scraper limit and mode if running scrape (choice 2 or 3)
+if "%action%"=="1" goto run_action
+set limit=all
+set /p limit="Enter number of stocks to process [number or all, default: all]: "
+set scraper_mode=weekly
+set /p scraper_mode="Enter execution mode [weekly or daily, default: weekly]: "
+echo.
+
+:run_action
 if "%action%"=="1" (
     echo [1/2] Dropping and recreating database schemas...
     uv run python -m backend.reset_db
@@ -56,21 +65,11 @@ if "%action%"=="1" (
 )
 
 if "%action%"=="2" (
-    set limit=all
-    set /p limit="Enter number of stocks to process (enter a number or 'all', default: all): "
-    set scraper_mode=weekly
-    set /p scraper_mode="Enter execution mode (weekly or daily, default: weekly): "
-    echo.
     echo [1/1] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
     uv run python -m backend.pipeline %limit% %scraper_mode%
 )
 
 if "%action%"=="3" (
-    set limit=all
-    set /p limit="Enter number of stocks to process (enter a number or 'all', default: all): "
-    set scraper_mode=weekly
-    set /p scraper_mode="Enter execution mode (weekly or daily, default: weekly): "
-    echo.
     echo [1/3] Dropping and recreating database schemas...
     uv run python -m backend.reset_db
     echo.
