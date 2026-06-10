@@ -2,6 +2,9 @@ import os
 import sys
 import uuid
 
+# Force local SQLite database for automated tests to protect production database
+os.environ["DATABASE_URL"] = "sqlite:///./local_test.db"
+
 # Ensure backend package can be resolved
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

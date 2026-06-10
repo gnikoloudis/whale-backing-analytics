@@ -272,6 +272,15 @@ def get_nasdaq_symbols():
         raise
 
 def process_single_ticker(symbol, config, db: Session, run_time: str, max_retries=3):
+    # Skip if already successfully processed today to support resuming/retrying
+    today_str = run_time.split(" ")[0]
+    try:
+        existing = db.query(StockMetadata).filter_by(symbol=symbol).first()
+        if existing and existing.timestamp and existing.timestamp.startswith(today_str) and existing.category != "Failed":
+            return {"symbol": symbol, "category": existing.category, "deep_dive": existing.deep_dive_captured}
+    except Exception as e:
+        log_pipeline_warning(f"Could not check resume status for {symbol}: {e}")
+
     rps = config['performance']['requests_per_second']
     brackets = config['brackets']
     target_categories = config['target_categories']
@@ -571,7 +580,7 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20, mode: str = "weekly"
                 
             db_all_symbols = set()
             try:
-                db_all_symbols = set(s.symbol for s in db.query(StockMetadata.symbol).all())
+                db_all_symbols = set(s.symbol for s in db.query(StockMetadata.symbol).filter(StockMetadata.category != "Failed").all())
             except Exception as e:
                 log_pipeline_warning(f"Could not query all database symbols: {e}")
                 
