@@ -1,5 +1,5 @@
 @echo off
-title Stocks & Whale Analytics Suite Pipeline Tool
+title "Stocks & Whale Analytics Suite Pipeline Tool"
 echo ====================================================================
 echo       STOCKS ^& WHALE ANALYTICS SUITE - PIPELINE TOOL
 echo ====================================================================
@@ -48,38 +48,43 @@ echo ====================================================================
 echo.
 
 :: Only prompt for scraper limit and mode if running scrape (choice 2 or 3)
-if "%action%"=="1" goto run_action
+if "%action%"=="1" goto do_reset_seed
 set limit=all
 set /p limit="Enter number of stocks to process [number or all, default: all]: "
 set scraper_mode=weekly
 set /p scraper_mode="Enter execution mode [weekly or daily, default: weekly]: "
 echo.
 
-:run_action
-if "%action%"=="1" (
-    echo [1/2] Dropping and recreating database schemas...
-    uv run python -m backend.reset_db
-    echo.
-    echo [2/2] Seeding database from local consolidated CSV files...
-    uv run python -c "from backend.db import SessionLocal; from backend.pipeline import import_local_data; db=SessionLocal(); print(import_local_data(db)); db.close()"
-)
+if "%action%"=="2" goto do_live_scrape
+if "%action%"=="3" goto do_full_cycle
+echo Invalid action choice.
+goto end_pipeline
 
-if "%action%"=="2" (
-    echo [1/1] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
-    uv run python -m backend.pipeline %limit% %scraper_mode%
-)
+:do_reset_seed
+echo [1/2] Dropping and recreating database schemas...
+uv run python -m backend.reset_db
+echo.
+echo [2/2] Seeding database from local consolidated CSV files...
+uv run python -c "from backend.db import SessionLocal; from backend.pipeline import import_local_data; db=SessionLocal(); print(import_local_data(db)); db.close()"
+goto end_pipeline
 
-if "%action%"=="3" (
-    echo [1/3] Dropping and recreating database schemas...
-    uv run python -m backend.reset_db
-    echo.
-    echo [2/3] Seeding database from local consolidated CSV files...
-    uv run python -c "from backend.db import SessionLocal; from backend.pipeline import import_local_data; db=SessionLocal(); print(import_local_data(db)); db.close()"
-    echo.
-    echo [3/3] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
-    uv run python -m backend.pipeline %limit% %scraper_mode%
-)
+:do_live_scrape
+echo [1/1] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
+uv run python -m backend.pipeline %limit% %scraper_mode%
+goto end_pipeline
 
+:do_full_cycle
+echo [1/3] Dropping and recreating database schemas...
+uv run python -m backend.reset_db
+echo.
+echo [2/3] Seeding database from local consolidated CSV files...
+uv run python -c "from backend.db import SessionLocal; from backend.pipeline import import_local_data; db=SessionLocal(); print(import_local_data(db)); db.close()"
+echo.
+echo [3/3] Running live yfinance scraping pipeline (limit=%limit%, mode=%scraper_mode%)...
+uv run python -m backend.pipeline %limit% %scraper_mode%
+goto end_pipeline
+
+:end_pipeline
 echo.
 echo ====================================================================
 echo Task completed successfully!
