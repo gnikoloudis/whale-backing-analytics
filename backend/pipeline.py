@@ -10,10 +10,10 @@ from datetime import datetime
 import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, func, desc
 
 from .db import engine
-from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews
+from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews, TrackedSymbol
 
 # Configure logging
 logger = logging.getLogger("pipeline")
@@ -65,23 +65,29 @@ def import_local_data(db: Session) -> dict:
     log_pipeline_info("Starting local data import (seeding)...")
     try:
         config = load_config()
-        output_folder_name = config['storage']['output_folder']
+        storage_config = config.get('storage')
+        if not storage_config:
+            log_pipeline_warning("No 'storage' configuration section in config.yaml. Skipping offline seeding.")
+            return {"status": "skipped", "message": "Storage config missing"}
+            
+        output_folder_name = storage_config.get('output_folder', 'market_data')
         output_folder = os.path.join(ROOT_DIR, output_folder_name)
         
-        master_file_path = os.path.join(output_folder, config['storage']['master_file'])
-        inst_file_path = os.path.join(output_folder, config['storage']['institutional_file'])
-        mutual_file_path = os.path.join(output_folder, config['storage']['mutualfund_file'])
+        master_file_path = os.path.join(output_folder, storage_config.get('master_file', 'mega_large_nasdaq_categorized.csv'))
+        inst_file_path = os.path.join(output_folder, storage_config.get('institutional_file', ''))
+        mutual_file_path = os.path.join(output_folder, storage_config.get('mutualfund_file', ''))
         
+        # Check if master file exists
+        if not os.path.exists(master_file_path):
+            log_pipeline_warning(f"Master seeder file not found at: {master_file_path}. Skipping offline seeding.")
+            return {"status": "skipped", "message": f"Master seeder file not found: {master_file_path}"}
+            
         # 1. Clean existing tables
         log_pipeline_info("Clearing existing tables before seeding...")
         db.query(InstitutionalHolder).delete()
         db.query(MutualFundHolder).delete()
         db.query(StockMetadata).delete()
         db.commit()
-        
-        # 2. Ingest Stock Metadata
-        if not os.path.exists(master_file_path):
-            return {"status": "error", "message": f"Categorized master file not found at: {master_file_path}"}
         
         log_pipeline_info(f"Reading master categories: {master_file_path}")
         master_df = pd.read_csv(master_file_path)
@@ -200,7 +206,7 @@ def import_local_data(db: Session) -> dict:
             log_pipeline_info(f"Seeding {len(mutual_df)} mutual fund holder records with timestamp {default_timestamp}...")
             mutual_df.to_sql(name="mutual_fund_holders", con=engine, if_exists='append', index=False)
         # 5. Ingest Stock News (Optional local seeding)
-        news_file_name = config['storage'].get('news_file', 'mega_large_nasdaq_news_consolidated.csv')
+        news_file_name = storage_config.get('news_file', 'mega_large_nasdaq_news_consolidated.csv')
         news_file_path = os.path.join(output_folder, news_file_name)
         news_df = pd.DataFrame()
         if os.path.exists(news_file_path):
@@ -265,30 +271,12 @@ def get_nasdaq_symbols():
         log_pipeline_error(f"Failed to fetch symbols from FTP: {e}")
         raise
 
-def save_deep_data(data, folder_path, filename):
-    if data is None:
-        return
-    file_path = os.path.join(folder_path, f"{filename}.csv")
-    try:
-        if isinstance(data, pd.DataFrame):
-            if not data.empty:
-                data.to_csv(file_path, index=True)
-        elif isinstance(data, pd.Series):
-            data.to_csv(file_path, header=True)
-        elif isinstance(data, dict):
-            if data:
-                pd.DataFrame([data]).to_csv(file_path, index=False)
-    except Exception as e:
-        log_pipeline_warning(f"Could not write deep data file '{filename}': {e}")
-
 def process_single_ticker(symbol, config, db: Session, run_time: str, max_retries=3):
     rps = config['performance']['requests_per_second']
     brackets = config['brackets']
     target_categories = config['target_categories']
-    output_folder = os.path.join(ROOT_DIR, config['storage']['output_folder'])
     
     time.sleep(1.0 / rps)
-    ticker_dir = os.path.join(output_folder, symbol)
     attempt = 0
     backoff = 2
     
@@ -313,17 +301,123 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
             deep_dive_captured = "No"
             if cat in target_categories:
                 deep_dive_captured = "Yes"
-                os.makedirs(ticker_dir, exist_ok=True)
-                # Save locally as CSVs (for consistency with user's local usage workflow)
-                try: save_deep_data(info, ticker_dir, "info")
-                except: pass
-                try: save_deep_data(stock.institutional_holders, ticker_dir, "institutional_holders")
-                except: pass
+                
+                # 1. Institutional Holders (Upsert logic: update existing or append new)
+                try:
+                    inst_df = stock.institutional_holders
+                    if inst_df is not None and not inst_df.empty:
+                        mapping_inst = {
+                            'Date Reported': 'date_reported',
+                            'Holder': 'holder',
+                            'pctHeld': 'pct_held',
+                            'Shares': 'shares',
+                            'Value': 'value',
+                            'pctChange': 'pct_change',
+                            '% Out': 'pct_held',
+                            'Change': 'pct_change'
+                        }
+                        inst_df = inst_df.rename(columns=mapping_inst)
+                        inst_df['shares'] = pd.to_numeric(inst_df['shares'], errors='coerce')
+                        inst_df['value'] = pd.to_numeric(inst_df['value'], errors='coerce')
+                        inst_df['pct_held'] = pd.to_numeric(inst_df['pct_held'], errors='coerce')
+                        inst_df['pct_change'] = pd.to_numeric(inst_df['pct_change'], errors='coerce')
+                        
+                        with db_lock:
+                            for _, row in inst_df.iterrows():
+                                if pd.isna(row.get('holder')) or not row.get('holder'):
+                                    continue
+                                holder_name = str(row['holder'])
+                                existing_holder = db.query(InstitutionalHolder).filter_by(ticker=symbol, holder=holder_name).first()
+                                
+                                date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
+                                shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
+                                value_val = float(row['value']) if not pd.isna(row.get('value')) else None
+                                pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
+                                
+                                if existing_holder:
+                                    existing_holder.date_reported = date_val
+                                    existing_holder.pct_held = pct_held_val
+                                    existing_holder.shares = shares_val
+                                    existing_holder.value = value_val
+                                    existing_holder.pct_change = pct_change_val
+                                    existing_holder.timestamp = run_time
+                                else:
+                                    db.add(InstitutionalHolder(
+                                        ticker=symbol,
+                                        date_reported=date_val,
+                                        holder=holder_name,
+                                        pct_held=pct_held_val,
+                                        shares=shares_val,
+                                        value=value_val,
+                                        pct_change=pct_change_val,
+                                        timestamp=run_time
+                                    ))
+                            db.commit()
+                except Exception as e:
+                    log_pipeline_warning(f"Could not scrape/save institutional holders for {symbol}: {e}")
+                
+                # 2. Mutual Fund Holders (Upsert logic: update existing or append new)
+                try:
+                    mf_df = stock.mutualfund_holders
+                    if mf_df is not None and not mf_df.empty:
+                        mapping_mf = {
+                            'Date Reported': 'date_reported',
+                            'Holder': 'holder',
+                            'pctHeld': 'pct_held',
+                            'Shares': 'shares',
+                            'Value': 'value',
+                            'pctChange': 'pct_change',
+                            '% Out': 'pct_held',
+                            'Change': 'pct_change'
+                        }
+                        mf_df = mf_df.rename(columns=mapping_mf)
+                        mf_df['shares'] = pd.to_numeric(mf_df['shares'], errors='coerce')
+                        mf_df['value'] = pd.to_numeric(mf_df['value'], errors='coerce')
+                        mf_df['pct_held'] = pd.to_numeric(mf_df['pct_held'], errors='coerce')
+                        mf_df['pct_change'] = pd.to_numeric(mf_df['pct_change'], errors='coerce')
+                        
+                        with db_lock:
+                            for _, row in mf_df.iterrows():
+                                if pd.isna(row.get('holder')) or not row.get('holder'):
+                                    continue
+                                holder_name = str(row['holder'])
+                                existing_holder = db.query(MutualFundHolder).filter_by(ticker=symbol, holder=holder_name).first()
+                                
+                                date_val = str(row['date_reported']) if not pd.isna(row.get('date_reported')) else None
+                                pct_held_val = float(row['pct_held']) if not pd.isna(row.get('pct_held')) else None
+                                shares_val = int(row['shares']) if not pd.isna(row.get('shares')) else None
+                                value_val = float(row['value']) if not pd.isna(row.get('value')) else None
+                                pct_change_val = float(row['pct_change']) if not pd.isna(row.get('pct_change')) else None
+                                
+                                if existing_holder:
+                                    existing_holder.date_reported = date_val
+                                    existing_holder.pct_held = pct_held_val
+                                    existing_holder.shares = shares_val
+                                    existing_holder.value = value_val
+                                    existing_holder.pct_change = pct_change_val
+                                    existing_holder.timestamp = run_time
+                                else:
+                                    db.add(MutualFundHolder(
+                                        ticker=symbol,
+                                        date_reported=date_val,
+                                        holder=holder_name,
+                                        pct_held=pct_held_val,
+                                        shares=shares_val,
+                                        value=value_val,
+                                        pct_change=pct_change_val,
+                                        timestamp=run_time
+                                    ))
+                            db.commit()
+                except Exception as e:
+                    log_pipeline_warning(f"Could not scrape/save mutual fund holders for {symbol}: {e}")
+                
+                # 3. Stock News (Append and keep 10 latest)
                 try:
                     news_data = stock.news
                     if news_data:
                         articles = []
-                        for article in news_data[:5]: # Cap at top 5
+                        for article in news_data[:5]:
                             content = article.get('content', {})
                             if content:
                                 title = content.get('title')
@@ -358,11 +452,29 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
                                         'publish_time': publish_time
                                     })
                         if articles:
-                            news_df = pd.DataFrame(articles)
-                            save_deep_data(news_df, ticker_dir, "news")
+                            with db_lock:
+                                for article in articles:
+                                    # Avoid duplicate articles based on ticker and link
+                                    exists = db.query(StockNews).filter_by(ticker=symbol, link=article['link']).first()
+                                    if not exists:
+                                        db.add(StockNews(
+                                            ticker=symbol,
+                                            title=article['title'],
+                                            publisher=article['publisher'],
+                                            link=article['link'],
+                                            publish_time=article['publish_time'],
+                                            timestamp=run_time
+                                        ))
+                                db.commit()
+                                
+                                # Enforce maximum of 10 latest news items for this ticker
+                                all_news = db.query(StockNews).filter_by(ticker=symbol).order_by(desc(StockNews.publish_time)).all()
+                                if len(all_news) > 10:
+                                    for old_art in all_news[10:]:
+                                        db.delete(old_art)
+                                    db.commit()
                 except Exception as e:
-                    log_pipeline_warning(f"Could not scrape news for {symbol}: {e}")
-                # Other deep dive extractions can be done here if needed
+                    log_pipeline_warning(f"Could not scrape/save news for {symbol}: {e}")
             
             # Save/Update in database
             timestamp = run_time
@@ -386,6 +498,15 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
                         deep_dive_captured=deep_dive_captured,
                         timestamp=timestamp
                     ))
+                
+                # Append/upsert to tracked_symbols table if it satisfies target categories
+                if cat in target_categories:
+                    existing_tracked = db.query(TrackedSymbol).filter_by(symbol=symbol).first()
+                    if not existing_tracked:
+                        db.add(TrackedSymbol(symbol=symbol, category=cat))
+                    else:
+                        existing_tracked.category = cat
+                        
                 db.commit()
                 
             return {"symbol": symbol, "category": cat, "deep_dive": deep_dive_captured}
@@ -412,56 +533,59 @@ def process_single_ticker(symbol, config, db: Session, run_time: str, max_retrie
             db.commit()
     return {"symbol": symbol, "category": "Failed", "deep_dive": "Failed"}
 
-def run_scraping_pipeline(db: Session, max_limit: int = 20):
+def run_scraping_pipeline(db: Session, max_limit: int = 20, mode: str = "weekly"):
     """
-    Runs live scraper (Script 1) for a limit of symbols (default 20 for quick testing)
-    and then triggers the database consolidation (Scripts 2.1 & 2.2).
+    Runs live scraper for a limit of symbols (default 20 for quick testing)
+    and saves categories, holders and news directly into the database in real-time.
+    Supports 'weekly' mode (queries Nasdaq FTP, updates tracked_symbols table)
+    and 'daily' mode (only processes symbols already in the tracked_symbols table).
     """
     global pipeline_logs
     pipeline_logs = []
     
     run_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_pipeline_info(f"Initializing live scraping pipeline (Run Timestamp: {run_time})...")
+    log_pipeline_info(f"Initializing live scraping pipeline ({mode.upper()} mode, Run Timestamp: {run_time})...")
     
     try:
         config = load_config()
-        output_folder_path = os.path.join(ROOT_DIR, config['storage']['output_folder'])
-        os.makedirs(output_folder_path, exist_ok=True)
         
         # 1. Fetch Symbols to process.
-        # Prioritize symbols already present in the database that belong to our target categories.
-        # Also compare with the live Nasdaq FTP listings to find any newly listed tickers.
-        target_categories = config.get('target_categories', ["Mega-Cap", "Large-Cap"])
-        target_db_symbols = []
-        try:
-            target_db_symbols = [s.symbol for s in db.query(StockMetadata.symbol).filter(
-                StockMetadata.category.in_(target_categories)
-            ).all()]
-        except Exception as e:
-            log_pipeline_warning(f"Could not read target symbols from database: {e}")
+        if mode == "daily":
+            all_symbols = [s.symbol for s in db.query(TrackedSymbol.symbol).all()]
+            log_pipeline_info(f"Daily Mode: Loaded {len(all_symbols)} tracked symbols from the database.")
+        else:
+            # Weekly Mode: Discover new/existing symbols
+            target_categories = config.get('target_categories', ["Mega-Cap", "Large-Cap"])
+            target_db_symbols = []
+            try:
+                target_db_symbols = [s.symbol for s in db.query(StockMetadata.symbol).filter(
+                    StockMetadata.category.in_(target_categories)
+                ).all()]
+            except Exception as e:
+                log_pipeline_warning(f"Could not read target symbols from database: {e}")
+                
+            nasdaq_symbols = []
+            try:
+                nasdaq_symbols = get_nasdaq_symbols()
+            except Exception as e:
+                log_pipeline_warning(f"Could not connect to Nasdaq FTP: {e}. Using empty list.")
+                
+            db_all_symbols = set()
+            try:
+                db_all_symbols = set(s.symbol for s in db.query(StockMetadata.symbol).all())
+            except Exception as e:
+                log_pipeline_warning(f"Could not query all database symbols: {e}")
+                
+            new_symbols = [s for s in nasdaq_symbols if s not in db_all_symbols]
+            if new_symbols:
+                log_pipeline_info(f"Discovered {len(new_symbols)} new symbols from Nasdaq FTP that are not in the database.")
+                
+            # Combine target existing symbols and new FTP symbols
+            all_symbols = list(dict.fromkeys(target_db_symbols + new_symbols))
             
-        nasdaq_symbols = []
-        try:
-            nasdaq_symbols = get_nasdaq_symbols()
-        except Exception as e:
-            log_pipeline_warning(f"Could not connect to Nasdaq FTP: {e}. Using empty list.")
-            
-        db_all_symbols = set()
-        try:
-            db_all_symbols = set(s.symbol for s in db.query(StockMetadata.symbol).all())
-        except Exception as e:
-            log_pipeline_warning(f"Could not query all database symbols: {e}")
-            
-        new_symbols = [s for s in nasdaq_symbols if s not in db_all_symbols]
-        if new_symbols:
-            log_pipeline_info(f"Discovered {len(new_symbols)} new symbols from Nasdaq FTP that are not in the database.")
-            
-        # Combine target existing symbols and any new FTP symbols (prioritize target_db_symbols first)
-        all_symbols = list(dict.fromkeys(target_db_symbols + new_symbols))
-        
-        if not all_symbols:
-            # Fallback if database is completely empty and FTP failed
-            all_symbols = get_nasdaq_symbols()
+            if not all_symbols:
+                # Fallback if database is completely empty and FTP failed
+                all_symbols = get_nasdaq_symbols()
             
         # Limit symbols to process to prevent hitting yfinance limits or freezing
         if max_limit is not None and max_limit > 0:
@@ -471,10 +595,10 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
             symbols_to_process = all_symbols
             log_pipeline_info(f"Processing queue of {len(symbols_to_process)} tickers for scraping.")
         
-        max_workers = config['performance']['max_workers']
+        max_workers = config.get('performance', {}).get('max_workers', 5)
         completed_count = 0
         
-        # 2. Run Scraping & Category Insertion (Script 1)
+        # 2. Run Scraping & Real-Time Ingestion
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ScreenerWorker") as executor:
             future_to_ticker = {
                 executor.submit(process_single_ticker, sym, config, db, run_time): sym 
@@ -490,135 +614,20 @@ def run_scraping_pipeline(db: Session, max_limit: int = 20):
                 except Exception as exc:
                     log_pipeline_error(f"Worker thread exception for {sym}: {exc}")
         
-        # 3. Consolidation Steps (Scripts 2.1 and 2.2 adapted to Database)
-        log_pipeline_info("Running database consolidation for institutional and mutual fund holders...")
-        
-        # Query target symbols from DB
-        target_stocks = db.query(StockMetadata).filter(
-            StockMetadata.category.in_(target_categories),
-            StockMetadata.deep_dive_captured == "Yes"
-        ).all()
-        
-        target_symbols = [s.symbol for s in target_stocks]
-        log_pipeline_info(f"Found {len(target_symbols)} symbols matching categories {target_categories} for holder consolidation.")
-        
-        # NOTE: We no longer delete old records to support historical tracking over time.
-        # Instead, we append records with the current run execution timestamp.
-        
-        inst_records_count = 0
-        mutual_records_count = 0
-        news_records_count = 0
-        
-        all_inst_dfs = []
-        all_mf_dfs = []
-        all_news_dfs = []
-        
-        for symbol in target_symbols:
-            ticker_folder = os.path.join(output_folder_path, symbol)
+        # 3. Aggregation/Summary stats
+        log_pipeline_info("Direct database ingestion complete, aggregating stats...")
+        try:
+            inst_records_count = db.query(func.count(InstitutionalHolder.id)).filter(InstitutionalHolder.timestamp == run_time).scalar() or 0
+            mutual_records_count = db.query(func.count(MutualFundHolder.id)).filter(MutualFundHolder.timestamp == run_time).scalar() or 0
+            news_records_count = db.query(func.count(StockNews.id)).filter(StockNews.timestamp == run_time).scalar() or 0
+        except Exception as e:
+            log_pipeline_warning(f"Failed to query stats from database: {e}")
+            inst_records_count = 0
+            mutual_records_count = 0
+            news_records_count = 0
             
-            # Consolidate Institutional Holders
-            inst_path = os.path.join(ticker_folder, "institutional_holders.csv")
-            if os.path.exists(inst_path):
-                try:
-                    df = pd.read_csv(inst_path)
-                    if not df.empty:
-                        mapping = {
-                            'Date Reported': 'date_reported',
-                            'Holder': 'holder',
-                            'pctHeld': 'pct_held',
-                            'Shares': 'shares',
-                            'Value': 'value',
-                            'pctChange': 'pct_change',
-                            '% Out': 'pct_held',
-                            'Change': 'pct_change'
-                        }
-                        df = df.rename(columns=mapping)
-                        df['ticker'] = symbol
-                        df['timestamp'] = run_time
-                        
-                        # Set default values for missing columns
-                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
-                        for col in cols:
-                            if col not in df.columns:
-                                df[col] = None
-                        df = df[cols]
-                        
-                        all_inst_dfs.append(df)
-                        inst_records_count += len(df)
-                except Exception as e:
-                    log_pipeline_warning(f"Error reading institutional holders CSV for {symbol}: {e}")
-            
-            # Consolidate Mutual Fund Holders
-            mf_path = os.path.join(ticker_folder, "mutualfund_holders.csv")
-            if os.path.exists(mf_path):
-                try:
-                    df = pd.read_csv(mf_path)
-                    if not df.empty:
-                        mapping = {
-                            'Date Reported': 'date_reported',
-                            'Holder': 'holder',
-                            'pctHeld': 'pct_held',
-                            'Shares': 'shares',
-                            'Value': 'value',
-                            'pctChange': 'pct_change',
-                            '% Out': 'pct_held',
-                            'Change': 'pct_change'
-                        }
-                        df = df.rename(columns=mapping)
-                        df['ticker'] = symbol
-                        df['timestamp'] = run_time
-                        
-                        cols = ['ticker', 'date_reported', 'holder', 'pct_held', 'shares', 'value', 'pct_change', 'timestamp']
-                        for col in cols:
-                            if col not in df.columns:
-                                df[col] = None
-                        df = df[cols]
-                        
-                        all_mf_dfs.append(df)
-                        mutual_records_count += len(df)
-                except Exception as e:
-                    log_pipeline_warning(f"Error reading mutual fund holders CSV for {symbol}: {e}")
-            
-            # Consolidate Stock News
-            news_path = os.path.join(ticker_folder, "news.csv")
-            if os.path.exists(news_path):
-                try:
-                    df = pd.read_csv(news_path)
-                    if not df.empty:
-                        df['ticker'] = symbol
-                        df['timestamp'] = run_time
-                        
-                        cols = ['ticker', 'title', 'publisher', 'link', 'publish_time', 'timestamp']
-                        for col in cols:
-                            if col not in df.columns:
-                                df[col] = None
-                        df = df[cols]
-                        
-                        all_news_dfs.append(df)
-                        news_records_count += len(df)
-                except Exception as e:
-                    log_pipeline_warning(f"Error reading news CSV for {symbol}: {e}")
-                    
-        # Ingest bulk institutional holders in one go
-        if all_inst_dfs:
-            log_pipeline_info(f"Uploading {inst_records_count} institutional holder rows in bulk to database...")
-            combined_inst_df = pd.concat(all_inst_dfs, ignore_index=True)
-            combined_inst_df.to_sql(name="institutional_holders", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
-            
-        # Ingest bulk mutual fund holders in one go
-        if all_mf_dfs:
-            log_pipeline_info(f"Uploading {mutual_records_count} mutual fund holder rows in bulk to database...")
-            combined_mf_df = pd.concat(all_mf_dfs, ignore_index=True)
-            combined_mf_df.to_sql(name="mutual_fund_holders", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
-            
-        # Ingest bulk stock news in one go
-        if all_news_dfs:
-            log_pipeline_info(f"Uploading {news_records_count} stock news rows in bulk to database...")
-            combined_news_df = pd.concat(all_news_dfs, ignore_index=True)
-            combined_news_df.to_sql(name="stock_news", con=engine, if_exists="append", index=False, method="multi", chunksize=1000)
-        
-        log_pipeline_info(f"Scraper & Consolidation pipeline finished successfully!")
-        log_pipeline_info(f"Loaded {completed_count} stock metadata entries, {inst_records_count} institutional records, {mutual_records_count} mutual fund records, and {news_records_count} news records.")
+        log_pipeline_info("Scraper pipeline finished successfully!")
+        log_pipeline_info(f"Ingested {completed_count} stock metadata entries, {inst_records_count} institutional records, {mutual_records_count} mutual fund records, and {news_records_count} news records.")
         return {"status": "success", "stocks_scraped": completed_count, "inst_records": inst_records_count, "mutual_records": mutual_records_count, "news_records": news_records_count}
         
     except Exception as e:
@@ -644,17 +653,22 @@ if __name__ == "__main__":
     try:
         print("--- STARTING SCHEDULER PIPELINE SCRAPE ---")
         limit = 50
-        if len(sys.argv) > 1:
-            val = sys.argv[1].strip().lower()
-            if val == "all":
+        mode = "weekly"
+        
+        for arg in sys.argv[1:]:
+            arg_clean = arg.strip().lower()
+            if arg_clean in ["daily", "weekly"]:
+                mode = arg_clean
+            elif arg_clean == "all":
                 limit = None
             else:
                 try:
-                    limit = int(val)
+                    limit = int(arg_clean)
                 except ValueError:
                     pass
         
-        result = run_scraping_pipeline(db, max_limit=limit)
+        print(f"Running pipeline with limit={limit}, mode={mode}...")
+        result = run_scraping_pipeline(db, max_limit=limit, mode=mode)
         print(f"--- PIPELINE COMPLETED ---")
         print(f"Scrape Status: {result.get('status')}")
         print(f"Stocks Scraped: {result.get('stocks_scraped')}")

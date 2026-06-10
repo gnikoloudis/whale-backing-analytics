@@ -75,3 +75,11 @@ class StockNews(Base):
     timestamp = Column(String, nullable=True, index=True)
 
     stock = relationship("StockMetadata", back_populates="news")
+
+
+class TrackedSymbol(Base):
+    __tablename__ = "tracked_symbols"
+
+    symbol = Column(String, primary_key=True, index=True)
+    category = Column(String, nullable=False)
+

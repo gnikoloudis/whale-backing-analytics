@@ -2,6 +2,7 @@
 
 # Local database and system files
 *.db
+*.db-journal
 backend/local.db
 backend/__pycache__/
 .venv/
@@ -26,3 +27,5 @@ pnpm-debug.log*
 lerna-debug.log*
 .agents/*
 .antigravity/*
+docs/*
+various.txt

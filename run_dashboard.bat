@@ -7,7 +7,7 @@ echo.
 
 echo [1/2] Starting FastAPI Backend Server (Port: 8000)...
 echo.
-start "Stocks Backend API" cmd /k "set DATABASE_URL=sqlite:///./local.db&& uv run uvicorn backend.main:app --reload"
+start "Stocks Backend API" cmd /k "set DATABASE_URL=sqlite:///./local.db&& uv run uvicorn backend.main:app --host 0.0.0.0 --reload"
 
 echo [2/2] Starting React Vite Frontend (Port: 5173)...
 echo.
@@ -17,9 +17,9 @@ echo.
 echo ====================================================================
 echo Both servers have been launched in separate console windows!
 echo.
-echo - FastAPI Backend API  : http://localhost:8000
-echo - Swagger API Docs     : http://localhost:8000/docs
-echo - React Frontend App   : http://localhost:5173
+echo - FastAPI Backend API  : http://0.0.0.0:8000
+echo - Swagger API Docs     : http://0.0.0.0:8000/docs
+echo - React Frontend App   : http://0.0.0.0:5173
 echo ====================================================================
 echo.
 echo Press any key to close this launcher console window...

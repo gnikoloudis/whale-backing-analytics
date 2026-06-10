@@ -2,9 +2,9 @@ import os
 from fastapi import FastAPI, Depends, BackgroundTasks, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, text
 
-from .db import engine, Base, get_db
+from .db import engine, Base, get_db, SessionLocal
 from .models import StockMetadata, InstitutionalHolder, MutualFundHolder, StockNews
 from . import pipeline
 
@@ -46,15 +46,14 @@ def read_root():
 is_pipeline_running = False
 pipeline_execution_result = None
 
-def run_pipeline_task(db_session_factory, limit: int):
+def run_pipeline_task(db_session_factory, limit: int, mode: str):
     global is_pipeline_running, pipeline_execution_result
     is_pipeline_running = True
-    pipeline.log_pipeline_info(f"Background scraper worker started. Processing {limit} symbols...")
+    pipeline.log_pipeline_info(f"Background scraper worker started. Processing {limit} symbols in {mode.upper()} mode...")
     
-    # We create a new DB session inside the background thread to avoid multithreading conflicts
     db = db_session_factory()
     try:
-        pipeline_execution_result = pipeline.run_scraping_pipeline(db, max_limit=limit)
+        pipeline_execution_result = pipeline.run_scraping_pipeline(db, max_limit=limit, mode=mode)
         pipeline.log_pipeline_info("Background scraper worker finished successfully!")
     except Exception as e:
         pipeline_execution_result = {"status": "error", "message": str(e)}
@@ -64,7 +63,9 @@ def run_pipeline_task(db_session_factory, limit: int):
         is_pipeline_running = False
 
 @app.get("/api/status")
-def get_status(db: Session = Depends(get_db)):
+def get_status(
+    db: Session = Depends(get_db)
+):
     db_type = "SQLite" if engine.url.drivername == "sqlite" else "PostgreSQL"
     try:
         from .pipeline import load_config
@@ -97,7 +98,9 @@ def get_status(db: Session = Depends(get_db)):
         }
 
 @app.post("/api/pipeline/seed")
-def seed_database(db: Session = Depends(get_db)):
+def seed_database(
+    db: Session = Depends(get_db)
+):
     global is_pipeline_running
     if is_pipeline_running:
         raise HTTPException(status_code=400, detail="Cannot seed while live pipeline is running")
@@ -111,17 +114,16 @@ def seed_database(db: Session = Depends(get_db)):
 def trigger_pipeline(
     background_tasks: BackgroundTasks, 
     limit: int = Query(20, description="Limit of symbols to scrape for quick testing"),
-    db_session_factory = Depends(get_db)
+    mode: str = Query("weekly", description="Execution mode: weekly or daily")
 ):
     global is_pipeline_running
     if is_pipeline_running:
         return {"status": "already_running", "message": "Scraper pipeline is already running in background."}
     
     # Trigger background execution
-    # To get db session factory, we pass SessionLocal bind
     from .db import SessionLocal
-    background_tasks.add_task(run_pipeline_task, SessionLocal, limit)
-    return {"status": "started", "message": f"Scraper pipeline kicked off in background (capped at {limit} symbols)."}
+    background_tasks.add_task(run_pipeline_task, SessionLocal, limit, mode)
+    return {"status": "started", "message": f"Scraper pipeline kicked off in background ({mode} mode, capped at {limit} symbols)."}
 
 @app.get("/api/pipeline/logs")
 def get_pipeline_logs():
@@ -167,7 +169,10 @@ def list_stocks(
     return stocks
 
 @app.get("/api/holders/stats")
-def get_holders_stats(timestamp: str = Query(None), db: Session = Depends(get_db)):
+def get_holders_stats(
+    timestamp: str = Query(None), 
+    db: Session = Depends(get_db)
+):
     """
     Returns aggregated holder analytics:
     - Top stocks by institutional backing value
@@ -232,7 +237,10 @@ def get_holders_stats(timestamp: str = Query(None), db: Session = Depends(get_db
     sector_inst_query = db.query(
         StockMetadata.sector,
         func.sum(InstitutionalHolder.value).label("total_value")
-    ).join(InstitutionalHolder, StockMetadata.symbol == InstitutionalHolder.ticker)
+    ).join(
+        InstitutionalHolder, 
+        StockMetadata.symbol == InstitutionalHolder.ticker
+    )
     if timestamp:
         sector_inst_query = sector_inst_query.filter(InstitutionalHolder.timestamp == timestamp)
     sector_inst = sector_inst_query.group_by(StockMetadata.sector).all()
@@ -240,7 +248,10 @@ def get_holders_stats(timestamp: str = Query(None), db: Session = Depends(get_db
     sector_mf_query = db.query(
         StockMetadata.sector,
         func.sum(MutualFundHolder.value).label("total_value")
-    ).join(MutualFundHolder, StockMetadata.symbol == MutualFundHolder.ticker)
+    ).join(
+        MutualFundHolder, 
+        StockMetadata.symbol == MutualFundHolder.ticker
+    )
     if timestamp:
         sector_mf_query = sector_mf_query.filter(MutualFundHolder.timestamp == timestamp)
     sector_mf = sector_mf_query.group_by(StockMetadata.sector).all()
@@ -281,7 +292,11 @@ def get_holders_stats(timestamp: str = Query(None), db: Session = Depends(get_db
     }
 
 @app.get("/api/holders/{ticker}")
-def get_ticker_holders(ticker: str, timestamp: str = Query(None), db: Session = Depends(get_db)):
+def get_ticker_holders(
+    ticker: str, 
+    timestamp: str = Query(None), 
+    db: Session = Depends(get_db)
+):
     """Returns top institutional and mutual fund holders for a single ticker"""
     # Verify stock exists
     stock = db.query(StockMetadata).filter_by(symbol=ticker.upper()).first()

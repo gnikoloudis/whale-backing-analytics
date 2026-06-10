@@ -6,11 +6,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.db import Base, engine
 # Import models to ensure they are registered with Base
-from backend.models import StockMetadata, InstitutionalHolder, MutualFundHolder
+from backend.models import StockMetadata, InstitutionalHolder, MutualFundHolder, TrackedSymbol
 
 def reset_database():
     print("Resetting database schema...")
-    print("1. Dropping existing tables (stock_metadata, institutional_holders, mutual_fund_holders)...")
+    print("1. Dropping existing tables (stock_metadata, institutional_holders, mutual_fund_holders, tracked_symbols)...")
     Base.metadata.drop_all(bind=engine)
     print("2. Recreating tables with the new schema (including timestamp columns)...")
     Base.metadata.create_all(bind=engine)

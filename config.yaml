@@ -1,0 +1,16 @@
+# Pipeline and database ingestion configuration
+
+
+performance:
+  requests_per_second: 5
+  max_workers: 5
+
+brackets:
+  mega_cap: 200.0
+  large_cap: 10.0
+  mid_cap: 2.0
+  small_cap: 0.3
+
+target_categories:
+  - "Mega-Cap"
+  - "Large-Cap"
