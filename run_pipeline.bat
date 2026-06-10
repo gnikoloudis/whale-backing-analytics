@@ -30,10 +30,12 @@ if "%target%"=="2" (
     echo.
     echo [INFO] Target configured to Supabase PostgreSQL.
     set DATABASE_URL=%DATABASE_URL_SUPABASE%
+    set USE_PRODUCTION_DB=true
 ) else (
     echo.
     echo [INFO] Target configured to local SQLite.
     set DATABASE_URL=
+    set USE_PRODUCTION_DB=
 )
 echo.
 

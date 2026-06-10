@@ -2,6 +2,12 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+# Safety: capture whether DATABASE_URL was already set in the system environment
+# BEFORE loading .env. This distinguishes between:
+# - GitHub Actions (DATABASE_URL set via secrets -> use it)
+# - Local dev with .env (DATABASE_URL in .env only -> require USE_PRODUCTION_DB flag)
+_system_has_database_url = "DATABASE_URL" in os.environ
+
 # Try to load environment variables from .env file in the same directory if it exists
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 if os.path.exists(env_path):
@@ -15,11 +21,22 @@ if os.path.exists(env_path):
                     os.environ[key] = val.strip()
 
 # Database selection:
-# If DATABASE_URL is provided in environment variables, connect to PostgreSQL (Supabase)
-# Otherwise, fall back to a local SQLite database for local testing
+# 1. If DATABASE_URL was in the system environment (e.g. GitHub Actions), always use it.
+# 2. If DATABASE_URL comes from .env only, require USE_PRODUCTION_DB=true to use it.
+#    This prevents local operations (seed, reset) from accidentally wiping production.
+# 3. Otherwise, fall back to local SQLite.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL:
     DATABASE_URL = DATABASE_URL.strip('"\'')
+
+use_production = os.environ.get("USE_PRODUCTION_DB", "").lower() in ("true", "1", "yes")
+
+if DATABASE_URL and not _system_has_database_url and not use_production:
+    # DATABASE_URL came from .env but USE_PRODUCTION_DB is not set -> use local SQLite
+    print("[db.py] WARNING: DATABASE_URL found in .env but USE_PRODUCTION_DB is not set.")
+    print("[db.py]          Defaulting to local SQLite to protect production data.")
+    print("[db.py]          Set USE_PRODUCTION_DB=true to connect to Supabase.")
+    DATABASE_URL = None
 
 if not DATABASE_URL:
     # SQLite local DB path
