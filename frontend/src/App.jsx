@@ -383,7 +383,10 @@ function App() {
           </div>
         </div>
       )}
-
+       <div>
+      {/* ... */}
+      <SpeedInsights />
+    </div>
       {/* Google AdSense Footer Leaderboard */}
       {/* <AdBanner slotId="4670133083" format="horizontal" /> */}
 
