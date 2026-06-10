@@ -23,6 +23,11 @@ on:
         options:
           - 'false'
           - 'true'
+      limit:
+        description: 'Limit (number of symbols to process, or "all")'
+        required: true
+        default: 'all'
+        type: string
 
 jobs:
   scrape:
@@ -54,8 +59,8 @@ jobs:
               echo "Resetting database schema..."
               python backend/reset_db.py
             fi
-            echo "Manually triggered: Running pipeline in ${{ github.event.inputs.mode }} mode..."
-            python -m backend.pipeline all ${{ github.event.inputs.mode }}
+            echo "Manually triggered: Running pipeline in ${{ github.event.inputs.mode }} mode with limit=${{ github.event.inputs.limit }}..."
+            python -m backend.pipeline ${{ github.event.inputs.limit }} ${{ github.event.inputs.mode }}
           else
             DAY_OF_WEEK=$(date +%u)
             if [ "$DAY_OF_WEEK" -eq 7 ]; then

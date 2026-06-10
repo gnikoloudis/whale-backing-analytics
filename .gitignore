@@ -28,4 +28,6 @@ lerna-debug.log*
 .agents/*
 .antigravity/*
 docs/*
-various.txt
+
+#sensitive
+sensitive_various.txt
