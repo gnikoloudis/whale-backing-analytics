@@ -6,6 +6,7 @@ import KpiMetrics from './components/KpiMetrics';
 import DashboardOverview from './components/DashboardOverview';
 import TickerDirectory from './components/TickerDirectory';
 import TickerDetails from './components/TickerDetails';
+import { SpeedInsights } from "@vercel/speed-insights/next"
 import {
   API_BASE_URL,
   isSupabaseMode,
