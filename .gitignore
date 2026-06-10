@@ -31,3 +31,6 @@ docs/*
 
 #sensitive
 sensitive_various.txt
+.env
+backend/.env
+frontend/.env
