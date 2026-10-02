@@ -157,41 +157,53 @@ function App() {
   };
 
   const fetchTickerDetails = async (ticker) => {
+    if (!ticker) return;
+    const cleanTicker = (ticker || '').trim().toUpperCase();
+
     try {
       if (isApiOffline) {
-        setTickerHolders(MOCK_TICKER_HOLDERS(ticker));
+        setTickerHolders(MOCK_TICKER_HOLDERS(cleanTicker));
         return;
       }
 
       if (isSupabaseMode) {
-        const cleanTicker = (ticker || '').trim().toUpperCase();
-        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*),stock_news(*)&symbol=eq.${encodeURIComponent(cleanTicker)}`;
+        // Query stock metadata and holder tables directly with case-insensitive `ilike`
+        // to bypass PostgREST embedding issues and guarantee holders are returned
+        const [stockData, instData, mfData, newsData] = await Promise.all([
+          supabaseFetch(`stock_metadata?symbol=ilike.${encodeURIComponent(cleanTicker)}`),
+          supabaseFetch(`institutional_holders?ticker=ilike.${encodeURIComponent(cleanTicker)}`),
+          supabaseFetch(`mutual_fund_holders?ticker=ilike.${encodeURIComponent(cleanTicker)}`),
+          supabaseFetch(`stock_news?ticker=ilike.${encodeURIComponent(cleanTicker)}`)
+        ]);
 
-        const data = await supabaseFetch(path);
-        if (data && data.length > 0) {
-          const stockObj = data[0];
+        if (stockData && stockData.length > 0) {
+          const stockObj = stockData[0];
           const stockTimestamp = stockObj.timestamp;
 
-          // Filter holders to include those matching the stock's last scrape timestamp
+          const rawInst = Array.isArray(instData) ? instData : [];
+          const rawMf = Array.isArray(mfData) ? mfData : [];
+          const rawNews = Array.isArray(newsData) ? newsData : [];
+
+          // Filter holders to include those matching the stock's last scrape timestamp if available
           let filteredInst = stockTimestamp
-            ? (stockObj.institutional_holders || []).filter(h => h.timestamp === stockTimestamp)
-            : (stockObj.institutional_holders || []);
+            ? rawInst.filter(h => h.timestamp === stockTimestamp)
+            : rawInst;
 
           let filteredMf = stockTimestamp
-            ? (stockObj.mutual_fund_holders || []).filter(h => h.timestamp === stockTimestamp)
-            : (stockObj.mutual_fund_holders || []);
+            ? rawMf.filter(h => h.timestamp === stockTimestamp)
+            : rawMf;
 
-          // Fallback to all holders if timestamp filtering returns 0 rows but holders exist
-          if (filteredInst.length === 0 && (stockObj.institutional_holders || []).length > 0) {
-            filteredInst = stockObj.institutional_holders;
+          // Fallback to all holders for this ticker if timestamp filtering returns 0 rows but holders exist
+          if (filteredInst.length === 0 && rawInst.length > 0) {
+            filteredInst = rawInst;
           }
-          if (filteredMf.length === 0 && (stockObj.mutual_fund_holders || []).length > 0) {
-            filteredMf = stockObj.mutual_fund_holders;
+          if (filteredMf.length === 0 && rawMf.length > 0) {
+            filteredMf = rawMf;
           }
 
           const sortedInst = [...filteredInst].sort((a, b) => (b.value || 0) - (a.value || 0));
           const sortedMf = [...filteredMf].sort((a, b) => (b.value || 0) - (a.value || 0));
-          const sortedNews = [...(stockObj.stock_news || [])].sort((a, b) => (b.publish_time || 0) - (a.publish_time || 0));
+          const sortedNews = [...rawNews].sort((a, b) => (b.publish_time || 0) - (a.publish_time || 0));
 
           setTickerHolders({
             stock: {
@@ -207,7 +219,7 @@ function App() {
           });
         }
       } else {
-        const res = await fetch(`${API_BASE_URL}/api/holders/${ticker}`);
+        const res = await fetch(`${API_BASE_URL}/api/holders/${encodeURIComponent(cleanTicker)}`);
         if (res.ok) {
           const data = await res.json();
           setTickerHolders(data);
@@ -217,7 +229,7 @@ function App() {
       }
     } catch (error) {
       console.error("Error loading ticker details", error);
-      setTickerHolders(MOCK_TICKER_HOLDERS(ticker));
+      setTickerHolders(MOCK_TICKER_HOLDERS(cleanTicker));
     }
   };
 

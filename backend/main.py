@@ -297,22 +297,22 @@ def get_ticker_holders(
     db: Session = Depends(get_db)
 ):
     """Returns top institutional and mutual fund holders for a single ticker"""
-    # Verify stock exists
-    stock = db.query(StockMetadata).filter_by(symbol=ticker.upper()).first()
+    clean_ticker = ticker.strip().upper()
+    stock = db.query(StockMetadata).filter(func.upper(StockMetadata.symbol) == clean_ticker).first()
     if not stock:
         raise HTTPException(status_code=404, detail=f"Stock {ticker} not found")
         
-    inst_query = db.query(InstitutionalHolder).filter_by(ticker=ticker.upper())
+    inst_query = db.query(InstitutionalHolder).filter(func.upper(InstitutionalHolder.ticker) == clean_ticker)
     if timestamp:
         inst_query = inst_query.filter(InstitutionalHolder.timestamp == timestamp)
     inst_holders = inst_query.order_by(desc(InstitutionalHolder.value)).all()
     
-    mf_query = db.query(MutualFundHolder).filter_by(ticker=ticker.upper())
+    mf_query = db.query(MutualFundHolder).filter(func.upper(MutualFundHolder.ticker) == clean_ticker)
     if timestamp:
         mf_query = mf_query.filter(MutualFundHolder.timestamp == timestamp)
     mf_holders = mf_query.order_by(desc(MutualFundHolder.value)).all()
     
-    news_query = db.query(StockNews).filter_by(ticker=ticker.upper())
+    news_query = db.query(StockNews).filter(func.upper(StockNews.ticker) == clean_ticker)
     if timestamp:
         news_query = news_query.filter(StockNews.timestamp == timestamp)
     stock_news = news_query.order_by(desc(StockNews.publish_time).nulls_last()).all()
