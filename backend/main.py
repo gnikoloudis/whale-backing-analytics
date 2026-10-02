@@ -315,7 +315,7 @@ def get_ticker_holders(
     news_query = db.query(StockNews).filter_by(ticker=ticker.upper())
     if timestamp:
         news_query = news_query.filter(StockNews.timestamp == timestamp)
-    stock_news = news_query.order_by(desc(StockNews.publish_time)).all()
+    stock_news = news_query.order_by(desc(StockNews.publish_time).nulls_last()).all()
     
     # Serialize and format date_reported on-the-fly for clean rendering of pre-existing records
     inst_list = []

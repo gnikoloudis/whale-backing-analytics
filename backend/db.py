@@ -58,7 +58,11 @@ else:
         else:
             DATABASE_URL += "?sslmode=require"
     from sqlalchemy.pool import NullPool
-    engine = create_engine(DATABASE_URL, poolclass=NullPool)
+    engine = create_engine(
+        DATABASE_URL,
+        poolclass=NullPool,
+        connect_args={"prepare_threshold": None}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

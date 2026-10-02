@@ -17,7 +17,8 @@ def clean_database(database_url, name):
             else:
                 database_url += "?sslmode=require"
                 
-        engine = create_engine(database_url)
+        connect_args = {"prepare_threshold": None} if not is_sqlite else {}
+        engine = create_engine(database_url, connect_args=connect_args)
         
         with engine.begin() as conn:
             # Check if tables exist

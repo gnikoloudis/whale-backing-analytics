@@ -164,24 +164,34 @@ function App() {
       }
 
       if (isSupabaseMode) {
-        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*),stock_news(*)&symbol=eq.${ticker.toUpperCase() || ticker}`;
+        const cleanTicker = (ticker || '').trim().toUpperCase();
+        let path = `stock_metadata?select=*,institutional_holders(*),mutual_fund_holders(*),stock_news(*)&symbol=eq.${encodeURIComponent(cleanTicker)}`;
 
         const data = await supabaseFetch(path);
         if (data && data.length > 0) {
           const stockObj = data[0];
           const stockTimestamp = stockObj.timestamp;
 
-          // Filter holders to only include those matching the stock's own last scrape timestamp
-          const filteredInst = stockTimestamp
+          // Filter holders to include those matching the stock's last scrape timestamp
+          let filteredInst = stockTimestamp
             ? (stockObj.institutional_holders || []).filter(h => h.timestamp === stockTimestamp)
             : (stockObj.institutional_holders || []);
 
-          const filteredMf = stockTimestamp
+          let filteredMf = stockTimestamp
             ? (stockObj.mutual_fund_holders || []).filter(h => h.timestamp === stockTimestamp)
             : (stockObj.mutual_fund_holders || []);
 
-          const sortedInst = filteredInst.sort((a, b) => (b.value || 0) - (a.value || 0));
-          const sortedMf = filteredMf.sort((a, b) => (b.value || 0) - (a.value || 0));
+          // Fallback to all holders if timestamp filtering returns 0 rows but holders exist
+          if (filteredInst.length === 0 && (stockObj.institutional_holders || []).length > 0) {
+            filteredInst = stockObj.institutional_holders;
+          }
+          if (filteredMf.length === 0 && (stockObj.mutual_fund_holders || []).length > 0) {
+            filteredMf = stockObj.mutual_fund_holders;
+          }
+
+          const sortedInst = [...filteredInst].sort((a, b) => (b.value || 0) - (a.value || 0));
+          const sortedMf = [...filteredMf].sort((a, b) => (b.value || 0) - (a.value || 0));
+          const sortedNews = [...(stockObj.stock_news || [])].sort((a, b) => (b.publish_time || 0) - (a.publish_time || 0));
 
           setTickerHolders({
             stock: {
@@ -193,7 +203,7 @@ function App() {
             },
             institutional_holders: sortedInst,
             mutual_fund_holders: sortedMf,
-            news: stockObj.stock_news || []
+            news: sortedNews
           });
         }
       } else {

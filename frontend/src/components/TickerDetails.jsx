@@ -124,7 +124,9 @@ export default function TickerDetails({
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '10px 4px' }}>
-                  {tickerHolders.news.map((article, idx) => {
+                  {[...(tickerHolders.news || [])]
+                    .sort((a, b) => (b.publish_time || 0) - (a.publish_time || 0))
+                    .map((article, idx) => {
                     const dateStr = article.publish_time
                       ? new Date(article.publish_time * 1000).toLocaleDateString('en-US', {
                         year: 'numeric',
